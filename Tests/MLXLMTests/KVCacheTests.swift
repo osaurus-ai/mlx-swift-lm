@@ -3,7 +3,7 @@ import MLX
 import MLXLMCommon
 import Testing
 
-private let cacheCreators: [() -> any KVCache] = [
+private let cacheCreators: [@Sendable () -> any KVCache] = [
     { KVCacheSimple() },
     { RotatingKVCache(maxSize: 32) },
     { QuantizedKVCache() },
