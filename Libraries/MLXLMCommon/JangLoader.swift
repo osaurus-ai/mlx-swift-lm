@@ -263,7 +263,10 @@ public struct JangLoader: Sendable {
             }
         }
 
-        // For each quantized layer, infer the actual bit width
+        // For each quantized layer, infer the actual bit width.
+        // First try with the JANG block_size as group_size. If that doesn't produce
+        // a valid integer bit width, fall back to inferring both bits and group_size
+        // from shapes (handles gates with different group_size like 64 vs 128).
         for basePath in quantizedLayers {
             guard let weightArray = weights[basePath + ".weight"],
                 let scalesArray = weights[basePath + ".scales"]
@@ -271,12 +274,13 @@ public struct JangLoader: Sendable {
                 continue
             }
 
-            let bits = inferBitWidth(
-                weight: weightArray, scales: scalesArray, groupSize: groupSize)
+            // Try with known group_size first
+            let (bits, inferredGroupSize) = inferBitWidthAndGroupSize(
+                weight: weightArray, scales: scalesArray, knownGroupSize: groupSize)
 
-            if bits != defaultBits {
+            if bits != defaultBits || inferredGroupSize != groupSize {
                 perLayer[basePath] = .quantize(
-                    BaseConfiguration.Quantization(groupSize: groupSize, bits: bits))
+                    BaseConfiguration.Quantization(groupSize: inferredGroupSize, bits: bits))
             }
         }
 
@@ -289,23 +293,53 @@ public struct JangLoader: Sendable {
         )
     }
 
-    /// Infer bit width from weight and scales tensor shapes.
-    ///
-    /// Formula: `actual_bits = (weight.shape[-1] * 32) / (scales.shape[-1] * group_size)`
+    /// Infer bit width from weight and scales tensor shapes using a fixed group size.
     public static func inferBitWidth(
         weight: MLXArray, scales: MLXArray, groupSize: Int
     ) -> Int {
+        inferBitWidthAndGroupSize(weight: weight, scales: scales, knownGroupSize: groupSize).bits
+    }
+
+    /// Infer BOTH bit width and group size from weight and scales tensor shapes.
+    ///
+    /// Tries each valid bit width (high to low) to find one that produces a
+    /// consistent integer group size. This handles tensors with non-standard
+    /// group sizes (e.g., MoE gates at group_size=64 vs body at 128).
+    public static func inferBitWidthAndGroupSize(
+        weight: MLXArray, scales: MLXArray, knownGroupSize: Int? = nil
+    ) -> (bits: Int, groupSize: Int) {
         let packedDim = weight.shape.last ?? 0
         let numGroups = scales.shape.last ?? 1
-        let inDim = numGroups * groupSize
 
-        guard inDim > 0 else { return 4 }
+        guard packedDim > 0 && numGroups > 0 else { return (4, knownGroupSize ?? 64) }
 
-        let bits = (packedDim * 32) / inDim
+        // Use known group_size — this works for the vast majority of tensors.
+        if let gs = knownGroupSize, gs > 0 {
+            let inDim = numGroups * gs
+            if inDim > 0 {
+                let rawBits = (packedDim * 32) / inDim
+                let validBits = [2, 3, 4, 5, 6, 8]
+                if let closest = validBits.min(by: { abs($0 - rawBits) < abs($1 - rawBits) }) {
+                    let expectedPacked = inDim * closest / 32
+                    if expectedPacked == packedDim {
+                        return (closest, gs)
+                    }
+                }
+            }
+        }
 
-        // Clamp to valid bit widths
-        let validBits = [2, 3, 4, 5, 6, 8]
-        return validBits.min(by: { abs($0 - bits) < abs($1 - bits) }) ?? 4
+        // Known group_size didn't produce a valid round-trip.
+        // Infer both from shapes (low to high bits to prefer the base model's bit width).
+        for bits in [2, 3, 4, 5, 6, 8] {
+            let elemPerU32 = 32 / bits
+            let realCols = packedDim * elemPerU32
+            let gs = realCols / numGroups
+            if gs > 0 && gs * numGroups == realCols {
+                return (bits, gs)
+            }
+        }
+
+        return (4, knownGroupSize ?? 64)
     }
 
     // MARK: - MoE Gate Dequantization

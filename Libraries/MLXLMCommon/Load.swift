@@ -45,8 +45,9 @@ public func loadWeights(
     // per-model cleanup (models can inspect metadata to customize behavior)
     weights = model.sanitize(weights: weights, metadata: metadata)
 
-    // JANG: dequantize MoE gate weights from quantized uint32 → float32.
-    // Gates are stored quantized at 8-bit (CRITICAL tier) but models expect plain Linear.
+    // JANG: dequantize MoE gate weights from quantized uint32 → float.
+    // Gates are stored at 8-bit (CRITICAL tier) but may have different group_size
+    // than the body. Dequantizing resolves ambiguous bit/group_size inference.
     if let jangConfig {
         JangLoader.dequantizeMoEGates(
             weights: &weights, groupSize: jangConfig.quantization.blockSize)
