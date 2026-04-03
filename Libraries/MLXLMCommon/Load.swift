@@ -45,6 +45,13 @@ public func loadWeights(
     // per-model cleanup (models can inspect metadata to customize behavior)
     weights = model.sanitize(weights: weights, metadata: metadata)
 
+    // JANG: dequantize MoE gate weights from quantized uint32 → float32.
+    // Gates are stored quantized at 8-bit (CRITICAL tier) but models expect plain Linear.
+    if let jangConfig {
+        JangLoader.dequantizeMoEGates(
+            weights: &weights, groupSize: jangConfig.quantization.blockSize)
+    }
+
     // Determine quantization: JANG models infer per-layer bit widths from tensor shapes.
     // Standard MLX models use the quantization from config.json as before.
     let effectivePerLayerQuantization: BaseConfiguration.PerLayerQuantization?

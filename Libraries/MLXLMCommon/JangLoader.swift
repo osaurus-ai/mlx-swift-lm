@@ -308,6 +308,76 @@ public struct JangLoader: Sendable {
         return validBits.min(by: { abs($0 - bits) < abs($1 - bits) }) ?? 4
     }
 
+    // MARK: - MoE Gate Dequantization
+
+    /// Dequantize MoE gate/router weights from quantized uint32 to float.
+    ///
+    /// JANG quantizes MoE gate weights at CRITICAL tier (8-bit) for routing precision,
+    /// but the model expects them as plain float Linear (not QuantizedLinear).
+    /// This function detects gate weights that have .scales/.biases companions and
+    /// dequantizes them in-place, removing the scales/biases entries.
+    ///
+    /// Gate patterns matched:
+    /// - `.gate.weight` (not `.gate_proj.weight`) — Nemotron, MiniMax
+    /// - `.mlp.gate.weight` — Qwen3.5 MoE, general MoE
+    /// - `.mixer.gate.weight` — Nemotron-H
+    /// - `.router.proj.weight` — Gemma4 (already handled separately)
+    public static func dequantizeMoEGates(weights: inout [String: MLXArray], groupSize: Int) {
+        // Find gate weight keys that have .scales companion (meaning they're quantized)
+        var gateBasePaths = Set<String>()
+
+        for key in weights.keys {
+            // Match gate patterns but NOT gate_proj (which is an expert MLP weight)
+            if key.hasSuffix(".gate.scales") && !key.contains("gate_proj") && !key.contains("gate_up") {
+                let basePath = String(key.dropLast(".scales".count))
+                gateBasePaths.insert(basePath)
+            }
+            // Also match shared_expert_gate (Qwen3.5 MoE)
+            if key.hasSuffix(".shared_expert_gate.scales") {
+                let basePath = String(key.dropLast(".scales".count))
+                gateBasePaths.insert(basePath)
+            }
+        }
+
+        for basePath in gateBasePaths {
+            guard let gateWeight = weights[basePath + ".weight"],
+                let gateScales = weights[basePath + ".scales"]
+            else { continue }
+
+            let gateBiases = weights[basePath + ".biases"]
+
+            // Infer bit width AND group size from tensor shapes (don't trust config block_size)
+            let packedDim = gateWeight.shape.last ?? 0
+            let numGroups = gateScales.shape.last ?? 1
+
+            // Try each valid bit width to find the one that produces consistent shapes
+            var inferredBits = 4
+            var inferredGroupSize = groupSize
+            for bits in [8, 6, 5, 4, 3, 2] {
+                let elemPerU32 = 32 / bits
+                let realCols = packedDim * elemPerU32
+                if numGroups > 0 {
+                    let gs = realCols / numGroups
+                    if gs > 0 && gs * numGroups == realCols {
+                        inferredBits = bits
+                        inferredGroupSize = gs
+                        break
+                    }
+                }
+            }
+
+            // Dequantize to float32 for routing precision
+            let dequantized = MLX.dequantized(
+                gateWeight, scales: gateScales, biases: gateBiases,
+                groupSize: inferredGroupSize, bits: inferredBits)
+
+            // Replace quantized gate with float version, remove scales/biases
+            weights[basePath + ".weight"] = dequantized.asType(.float32)
+            weights.removeValue(forKey: basePath + ".scales")
+            weights.removeValue(forKey: basePath + ".biases")
+        }
+    }
+
     // MARK: - V1 Format Support
 
     /// Check if a model directory contains v1 format JANG weights.
