@@ -78,8 +78,14 @@ private func create<C: Codable, P>(
 /// Typically called via ``LLMModelFactory/load(from:configuration:progressHandler:)``.
 public enum VLMTypeRegistry {
 
+    /// The set of model type strings supported by the VLM factory.
+    /// Use this to check if a model_type from config.json is a known VLM architecture.
+    public static let supportedModelTypes: Set<String> = Set(_creators.keys)
+
     /// Shared instance with default model types.
-    public static let shared: ModelTypeRegistry = .init(creators: [
+    public static let shared: ModelTypeRegistry = .init(creators: _creators)
+
+    nonisolated(unsafe) private static let _creators: [String: (Data) throws -> any LanguageModel] = [
         "paligemma": create(PaliGemmaConfiguration.self, PaliGemma.init),
         "qwen2_vl": create(Qwen2VLConfiguration.self, Qwen2VL.init),
         "qwen2_5_vl": create(Qwen25VLConfiguration.self, Qwen25VL.init),
@@ -116,7 +122,7 @@ public enum VLMTypeRegistry {
         "lfm2-vl": create(LFM2VLConfiguration.self, LFM2VL.init),
         "glm_ocr": create(GlmOcrConfiguration.self, GlmOcr.init),
         "gemma4": create(Gemma4Configuration.self, Gemma4.init),
-    ])
+    ]
 }
 
 public enum VLMProcessorTypeRegistry {
