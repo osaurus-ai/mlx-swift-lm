@@ -130,8 +130,8 @@ Test results show the 31B JANG model "loads, tokenizer issue." This likely means
 
 **Investigation needed:**
 ```bash
-ls /Users/eric/mlx-models/Gemma-4-31B-it-JANG_4M/tokenizer*
-cat /Users/eric/mlx-models/Gemma-4-31B-it-JANG_4M/tokenizer_config.json | head -5
+ls <model-path>/tokenizer*
+cat <model-path>/tokenizer_config.json | head -5
 ```
 
 This may be a packaging issue (missing files in the JANG export), not a code bug.
