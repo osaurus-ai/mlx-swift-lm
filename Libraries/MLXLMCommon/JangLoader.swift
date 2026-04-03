@@ -1,0 +1,396 @@
+// Copyright © 2024-2026 Jinho Jang (eric@jangq.ai)
+// JANG format support for mlx-swift-lm
+
+import Foundation
+import MLX
+
+// MARK: - Config File Names
+
+/// Primary JANG config file name.
+public let jangConfigFileName = "jang_config.json"
+
+/// Legacy config file names to search for (fallback only).
+public let jangConfigFileNames = [
+    "jang_config.json",
+    "jjqf_config.json",
+    "jang_cfg.json",
+    "mxq_config.json",
+]
+
+// MARK: - JANG Config Structs
+
+/// Quantization settings from jang_config.json `quantization` block.
+public struct JangQuantization: Sendable, Equatable {
+    public let method: String
+    public let profile: String
+    public let targetBits: Float
+    public let actualBits: Float
+    public let blockSize: Int
+    public let bitWidthsUsed: [Int]
+    public let quantizationScheme: String
+    public let quantizationBackend: String
+
+    public init(
+        method: String = "jang-importance",
+        profile: String = "JANG_2S",
+        targetBits: Float = 2.5,
+        actualBits: Float = 2.85,
+        blockSize: Int = 64,
+        bitWidthsUsed: [Int] = [2, 4, 6],
+        quantizationScheme: String = "asymmetric",
+        quantizationBackend: String = "mx.quantize"
+    ) {
+        self.method = method
+        self.profile = profile
+        self.targetBits = targetBits
+        self.actualBits = actualBits
+        self.blockSize = blockSize
+        self.bitWidthsUsed = bitWidthsUsed
+        self.quantizationScheme = quantizationScheme
+        self.quantizationBackend = quantizationBackend
+    }
+}
+
+/// Source model info from jang_config.json `source_model` block.
+public struct JangSourceModel: Sendable, Equatable {
+    public let name: String
+    public let dtype: String
+    public let parameters: String
+
+    public init(name: String = "", dtype: String = "bfloat16", parameters: String = "0") {
+        self.name = name
+        self.dtype = dtype
+        self.parameters = parameters
+    }
+
+    public var parameterCount: Int { Int(parameters) ?? 0 }
+}
+
+/// Architecture info from jang_config.json `architecture` block.
+public struct JangArchitecture: Sendable, Equatable {
+    public let type: String
+    public let attention: String
+    public let hasVision: Bool
+    public let hasSSM: Bool
+    public let hasMoE: Bool
+
+    public init(
+        type: String = "transformer",
+        attention: String = "gqa",
+        hasVision: Bool = false,
+        hasSSM: Bool = false,
+        hasMoE: Bool = false
+    ) {
+        self.type = type
+        self.attention = attention
+        self.hasVision = hasVision
+        self.hasSSM = hasSSM
+        self.hasMoE = hasMoE
+    }
+}
+
+/// Runtime info from jang_config.json `runtime` block.
+public struct JangRuntime: Sendable, Equatable {
+    public let totalWeightBytes: Int
+    public let totalWeightGB: Float
+
+    public init(totalWeightBytes: Int = 0, totalWeightGB: Float = 0) {
+        self.totalWeightBytes = totalWeightBytes
+        self.totalWeightGB = totalWeightGB
+    }
+}
+
+/// Parsed JANG model configuration from jang_config.json.
+public struct JangConfig: Sendable {
+    public let format: String
+    public let formatVersion: String
+    public var isV2: Bool { formatVersion.hasPrefix("2") }
+    public let quantization: JangQuantization
+    public let sourceModel: JangSourceModel
+    public let architecture: JangArchitecture
+    public let runtime: JangRuntime
+
+    public init(
+        format: String = "jang",
+        formatVersion: String = "2.0",
+        quantization: JangQuantization = JangQuantization(),
+        sourceModel: JangSourceModel = JangSourceModel(),
+        architecture: JangArchitecture = JangArchitecture(),
+        runtime: JangRuntime = JangRuntime()
+    ) {
+        self.format = format
+        self.formatVersion = formatVersion
+        self.quantization = quantization
+        self.sourceModel = sourceModel
+        self.architecture = architecture
+        self.runtime = runtime
+    }
+}
+
+// MARK: - JANG Loader
+
+/// JANG model loader — detects, parses config, and infers per-layer quantization.
+public struct JangLoader: Sendable {
+
+    /// Check if a model directory contains a JANG model.
+    public static func isJangModel(at path: URL) -> Bool {
+        findConfigPath(at: path) != nil
+    }
+
+    /// Find the JANG config file in a model directory.
+    public static func findConfigPath(at modelPath: URL) -> URL? {
+        for name in jangConfigFileNames {
+            let configURL = modelPath.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: configURL.path) {
+                return configURL
+            }
+        }
+        return nil
+    }
+
+    /// Load and parse the JANG config from a model directory.
+    public static func loadConfig(at modelPath: URL) throws -> JangConfig {
+        guard let configURL = findConfigPath(at: modelPath) else {
+            throw JangLoaderError.configNotFound(modelPath.path)
+        }
+
+        let data = try Data(contentsOf: configURL)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw JangLoaderError.invalidConfig("Failed to parse JSON")
+        }
+
+        return try parseConfig(from: json)
+    }
+
+    /// Parse a JangConfig from a raw JSON dictionary.
+    public static func parseConfig(from json: [String: Any]) throws -> JangConfig {
+        let format = json["format"] as? String ?? "jang"
+        let formatVersion = json["format_version"] as? String ?? "2.0"
+
+        let quantization: JangQuantization
+        if let qDict = json["quantization"] as? [String: Any] {
+            quantization = JangQuantization(
+                method: qDict["method"] as? String ?? "jang-importance",
+                profile: qDict["profile"] as? String ?? "JANG_2S",
+                targetBits: floatValue(qDict["target_bits"]) ?? 2.5,
+                actualBits: floatValue(qDict["actual_bits"]) ?? 2.5,
+                blockSize: qDict["block_size"] as? Int ?? 64,
+                bitWidthsUsed: qDict["bit_widths_used"] as? [Int] ?? [],
+                quantizationScheme: qDict["quantization_scheme"] as? String ?? "asymmetric",
+                quantizationBackend: qDict["quantization_backend"] as? String ?? "mx.quantize"
+            )
+        } else {
+            quantization = JangQuantization()
+        }
+
+        let sourceModel: JangSourceModel
+        if let smDict = json["source_model"] as? [String: Any] {
+            let params: String
+            if let s = smDict["parameters"] as? String {
+                params = s
+            } else if let n = smDict["parameters"] as? Int {
+                params = String(n)
+            } else {
+                params = "0"
+            }
+            sourceModel = JangSourceModel(
+                name: smDict["name"] as? String ?? "",
+                dtype: smDict["dtype"] as? String ?? "bfloat16",
+                parameters: params
+            )
+        } else {
+            sourceModel = JangSourceModel()
+        }
+
+        let architecture: JangArchitecture
+        if let aDict = json["architecture"] as? [String: Any] {
+            architecture = JangArchitecture(
+                type: aDict["type"] as? String ?? "transformer",
+                attention: aDict["attention"] as? String ?? "gqa",
+                hasVision: aDict["has_vision"] as? Bool ?? false,
+                hasSSM: aDict["has_ssm"] as? Bool ?? false,
+                hasMoE: aDict["has_moe"] as? Bool ?? false
+            )
+        } else {
+            architecture = JangArchitecture()
+        }
+
+        let runtime: JangRuntime
+        if let rDict = json["runtime"] as? [String: Any] {
+            runtime = JangRuntime(
+                totalWeightBytes: rDict["total_weight_bytes"] as? Int ?? 0,
+                totalWeightGB: floatValue(rDict["total_weight_gb"]) ?? 0
+            )
+        } else {
+            runtime = JangRuntime()
+        }
+
+        return JangConfig(
+            format: format,
+            formatVersion: formatVersion,
+            quantization: quantization,
+            sourceModel: sourceModel,
+            architecture: architecture,
+            runtime: runtime
+        )
+    }
+
+    // MARK: - Per-Layer Bit Width Inference
+
+    /// Infer per-layer quantization from loaded JANG weights.
+    ///
+    /// JANG v2 stores different tensors at different bit widths. The bit width is
+    /// inferred from tensor shapes: `actual_bits = (weight.shape[-1] * 32) / (scales.shape[-1] * group_size)`
+    ///
+    /// Returns a `BaseConfiguration.PerLayerQuantization` that the existing
+    /// `loadWeights()` quantization path can use directly.
+    public static func inferPerLayerQuantization(
+        weights: [String: MLXArray],
+        jangConfig: JangConfig
+    ) -> BaseConfiguration.PerLayerQuantization {
+        let groupSize = jangConfig.quantization.blockSize
+        var perLayer = [String: BaseConfiguration.QuantizationOption]()
+
+        // Find the default (most common) bit width from jang_config
+        let defaultBits = jangConfig.quantization.bitWidthsUsed.min() ?? 4
+
+        // Group weight keys by their base path (strip .weight/.scales/.biases suffix)
+        var quantizedLayers = Set<String>()
+        for key in weights.keys {
+            if key.hasSuffix(".scales") {
+                let basePath = String(key.dropLast(".scales".count))
+                quantizedLayers.insert(basePath)
+            }
+        }
+
+        // For each quantized layer, infer the actual bit width
+        for basePath in quantizedLayers {
+            guard let weightArray = weights[basePath + ".weight"],
+                let scalesArray = weights[basePath + ".scales"]
+            else {
+                continue
+            }
+
+            let bits = inferBitWidth(
+                weight: weightArray, scales: scalesArray, groupSize: groupSize)
+
+            if bits != defaultBits {
+                perLayer[basePath] = .quantize(
+                    BaseConfiguration.Quantization(groupSize: groupSize, bits: bits))
+            }
+        }
+
+        // Layers without .scales are unquantized (norms, biases) — they don't need entries
+        // The default quantization covers all layers not in perLayer
+
+        return BaseConfiguration.PerLayerQuantization(
+            quantization: BaseConfiguration.Quantization(groupSize: groupSize, bits: defaultBits),
+            perLayerQuantization: perLayer
+        )
+    }
+
+    /// Infer bit width from weight and scales tensor shapes.
+    ///
+    /// Formula: `actual_bits = (weight.shape[-1] * 32) / (scales.shape[-1] * group_size)`
+    public static func inferBitWidth(
+        weight: MLXArray, scales: MLXArray, groupSize: Int
+    ) -> Int {
+        let packedDim = weight.shape.last ?? 0
+        let numGroups = scales.shape.last ?? 1
+        let inDim = numGroups * groupSize
+
+        guard inDim > 0 else { return 4 }
+
+        let bits = (packedDim * 32) / inDim
+
+        // Clamp to valid bit widths
+        let validBits = [2, 3, 4, 5, 6, 8]
+        return validBits.min(by: { abs($0 - bits) < abs($1 - bits) }) ?? 4
+    }
+
+    // MARK: - V1 Format Support
+
+    /// Check if a model directory contains v1 format JANG weights.
+    public static func hasV1Weights(at modelPath: URL) -> Bool {
+        guard
+            let files = try? FileManager.default.contentsOfDirectory(
+                at: modelPath, includingPropertiesForKeys: nil)
+        else { return false }
+        return files.contains {
+            $0.pathExtension == "safetensors" && $0.lastPathComponent.contains(".jang.")
+        }
+    }
+
+    /// Load JANG v1 format weights (legacy uint8 → uint32 repacking).
+    public static func loadV1Weights(at modelPath: URL) throws -> [String: MLXArray] {
+        let fm = FileManager.default
+        let files =
+            try fm.contentsOfDirectory(at: modelPath, includingPropertiesForKeys: nil)
+            .filter {
+                $0.pathExtension == "safetensors" && $0.lastPathComponent.contains(".jang.")
+            }
+
+        guard !files.isEmpty else {
+            throw JangLoaderError.loadFailed(
+                "No .jang.safetensors files found at \(modelPath.path)")
+        }
+
+        var allWeights: [String: MLXArray] = [:]
+        for file in files {
+            let (weights, _) = try loadArraysAndMetadata(url: file)
+            for (key, array) in weights {
+                if array.dtype == .uint8 {
+                    allWeights[key] = repackUint8ToUint32(array)
+                } else {
+                    allWeights[key] = array
+                }
+            }
+        }
+        return allWeights
+    }
+
+    /// Repack a uint8 array to uint32 by packing groups of 4 bytes (little-endian).
+    private static func repackUint8ToUint32(_ array: MLXArray) -> MLXArray {
+        let shape = array.shape
+        let lastDim = shape.last ?? 0
+        guard lastDim % 4 == 0 else { return array.asType(.uint32) }
+
+        var newShape = shape
+        newShape[newShape.count - 1] = lastDim / 4
+        newShape.append(4)
+
+        let reshaped = array.reshaped(newShape)
+        let b0 = reshaped[0..., 0].asType(.uint32)
+        let b1 = reshaped[0..., 1].asType(.uint32) << 8
+        let b2 = reshaped[0..., 2].asType(.uint32) << 16
+        let b3 = reshaped[0..., 3].asType(.uint32) << 24
+        return b0 | b1 | b2 | b3
+    }
+
+    // MARK: - Helpers
+
+    private static func floatValue(_ value: Any?) -> Float? {
+        if let d = value as? Double { return Float(d) }
+        if let f = value as? Float { return f }
+        if let i = value as? Int { return Float(i) }
+        return nil
+    }
+}
+
+// MARK: - Errors
+
+public enum JangLoaderError: Error, LocalizedError, Sendable {
+    case configNotFound(String)
+    case invalidConfig(String)
+    case unsupportedVersion(String)
+    case loadFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .configNotFound(let path): return "JANG config not found at: \(path)"
+        case .invalidConfig(let msg): return "Invalid JANG config: \(msg)"
+        case .unsupportedVersion(let ver): return "Unsupported JANG version: \(ver)"
+        case .loadFailed(let msg): return "JANG load failed: \(msg)"
+        }
+    }
+}

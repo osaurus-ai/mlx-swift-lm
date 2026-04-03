@@ -97,6 +97,7 @@ public enum VLMTypeRegistry {
         "lfm2_vl": create(LFM2VLConfiguration.self, LFM2VL.init),
         "lfm2-vl": create(LFM2VLConfiguration.self, LFM2VL.init),
         "glm_ocr": create(GlmOcrConfiguration.self, GlmOcr.init),
+        "gemma4": create(Gemma4Configuration.self, Gemma4.init),
     ])
 }
 
@@ -128,6 +129,8 @@ public enum VLMProcessorTypeRegistry {
             LFM2VLProcessorConfiguration.self, LFM2VLProcessor.init),
         "Glm46VProcessor": create(
             GlmOcrProcessorConfiguration.self, GlmOcrProcessor.init),
+        "Gemma4Processor": create(
+            Gemma4ProcessorConfiguration.self, Gemma4Processor.init),
     ])
 }
 
@@ -332,6 +335,15 @@ public final class VLMModelFactory: ModelFactory {
             mutableConfiguration.toolCallFormat = ToolCallFormat.infer(from: baseConfig.modelType)
         }
 
+        // Detect JANG model — if jang_config.json exists, load it for per-layer quantization.
+        // Standard MLX models skip this entirely (jangConfig stays nil).
+        let jangConfig: JangConfig?
+        if JangLoader.isJangModel(at: modelDirectory) {
+            jangConfig = try JangLoader.loadConfig(at: modelDirectory)
+        } else {
+            jangConfig = nil
+        }
+
         // Load tokenizer from model directory (or alternate tokenizer repo),
         // processor config, and weights in parallel using async let.
         // Note: loadProcessorConfig does synchronous I/O but is marked async to enable
@@ -343,7 +355,8 @@ public final class VLMModelFactory: ModelFactory {
 
         try loadWeights(
             modelDirectory: modelDirectory, model: model,
-            perLayerQuantization: baseConfig.perLayerQuantization)
+            perLayerQuantization: baseConfig.perLayerQuantization,
+            jangConfig: jangConfig)
 
         let tokenizer = try await tokenizerTask
         let processorConfigData: Data

@@ -19,62 +19,82 @@ private func create<C: Codable, M>(
 /// Typically called via ``LLMModelFactory/load(from:configuration:progressHandler:)``.
 public enum LLMTypeRegistry {
 
+    // Split into functions to help the compiler type-check the large model registry
+    private static func coreModels() -> [String: (Data) throws -> any LanguageModel] {
+        [
+            "mistral": create(LlamaConfiguration.self, LlamaModel.init),
+            "llama": create(LlamaConfiguration.self, LlamaModel.init),
+            "phi": create(PhiConfiguration.self, PhiModel.init),
+            "phi3": create(Phi3Configuration.self, Phi3Model.init),
+            "phimoe": create(PhiMoEConfiguration.self, PhiMoEModel.init),
+            "gemma": create(GemmaConfiguration.self, GemmaModel.init),
+            "gemma2": create(Gemma2Configuration.self, Gemma2Model.init),
+            "gemma3": create(Gemma3TextConfiguration.self, Gemma3TextModel.init),
+            "gemma3_text": create(Gemma3TextConfiguration.self, Gemma3TextModel.init),
+            "gemma3n": create(Gemma3nTextConfiguration.self, Gemma3nTextModel.init),
+            "gemma4": create(Gemma4TextConfiguration.self, Gemma4TextModel.init),
+            "gemma4_text": create(Gemma4TextConfiguration.self, Gemma4TextModel.init),
+            "qwen2": create(Qwen2Configuration.self, Qwen2Model.init),
+            "qwen3": create(Qwen3Configuration.self, Qwen3Model.init),
+            "qwen3_moe": create(Qwen3MoEConfiguration.self, Qwen3MoEModel.init),
+            "qwen3_next": create(Qwen3NextConfiguration.self, Qwen3NextModel.init),
+            "qwen3_5": create(Qwen35Configuration.self, Qwen35Model.init),
+            "qwen3_5_moe": create(Qwen35Configuration.self, Qwen35MoEModel.init),
+            "qwen3_5_text": create(Qwen35TextConfiguration.self, Qwen35TextModel.init),
+        ]
+    }
+
+    private static func extendedModels() -> [String: (Data) throws -> any LanguageModel] {
+        [
+            "minicpm": create(MiniCPMConfiguration.self, MiniCPMModel.init),
+            "starcoder2": create(Starcoder2Configuration.self, Starcoder2Model.init),
+            "cohere": create(CohereConfiguration.self, CohereModel.init),
+            "openelm": create(OpenElmConfiguration.self, OpenELMModel.init),
+            "internlm2": create(InternLM2Configuration.self, InternLM2Model.init),
+            "deepseek_v3": create(DeepseekV3Configuration.self, DeepseekV3Model.init),
+            "granite": create(GraniteConfiguration.self, GraniteModel.init),
+            "granitemoehybrid": create(
+                GraniteMoeHybridConfiguration.self, GraniteMoeHybridModel.init),
+            "mimo": create(MiMoConfiguration.self, MiMoModel.init),
+            "mimo_v2_flash": create(MiMoV2FlashConfiguration.self, MiMoV2FlashModel.init),
+            "minimax": create(MiniMaxConfiguration.self, MiniMaxModel.init),
+            "glm4": create(GLM4Configuration.self, GLM4Model.init),
+            "glm4_moe": create(GLM4MoEConfiguration.self, GLM4MoEModel.init),
+            "glm4_moe_lite": create(GLM4MoELiteConfiguration.self, GLM4MoELiteModel.init),
+            "acereason": create(Qwen2Configuration.self, Qwen2Model.init),
+            "falcon_h1": create(FalconH1Configuration.self, FalconH1Model.init),
+            "bitnet": create(BitnetConfiguration.self, BitnetModel.init),
+            "smollm3": create(SmolLM3Configuration.self, SmolLM3Model.init),
+            "ernie4_5": create(Ernie45Configuration.self, Ernie45Model.init),
+            "lfm2": create(LFM2Configuration.self, LFM2Model.init),
+        ]
+    }
+
+    private static func additionalModels() -> [String: (Data) throws -> any LanguageModel] {
+        [
+            "baichuan_m1": create(BaichuanM1Configuration.self, BaichuanM1Model.init),
+            "exaone4": create(Exaone4Configuration.self, Exaone4Model.init),
+            "gpt_oss": create(GPTOSSConfiguration.self, GPTOSSModel.init),
+            "lille-130m": create(Lille130mConfiguration.self, Lille130mModel.init),
+            "olmoe": create(OlmoEConfiguration.self, OlmoEModel.init),
+            "olmo2": create(Olmo2Configuration.self, Olmo2Model.init),
+            "olmo3": create(Olmo3Configuration.self, Olmo3Model.init),
+            "bailing_moe": create(BailingMoeConfiguration.self, BailingMoeModel.init),
+            "lfm2_moe": create(LFM2MoEConfiguration.self, LFM2MoEModel.init),
+            "nanochat": create(NanoChatConfiguration.self, NanoChatModel.init),
+            "nemotron_h": create(NemotronHConfiguration.self, NemotronHModel.init),
+            "afmoe": create(AfMoEConfiguration.self, AfMoEModel.init),
+            "jamba_3b": create(JambaConfiguration.self, JambaModel.init),
+            "mistral3": create(Mistral3TextConfiguration.self, Mistral3TextModel.init),
+            "apertus": create(ApertusConfiguration.self, ApertusModel.init),
+        ]
+    }
+
     /// Shared instance with default model types.
-    public static let shared: ModelTypeRegistry = .init(creators: [
-        "mistral": create(LlamaConfiguration.self, LlamaModel.init),
-        "llama": create(LlamaConfiguration.self, LlamaModel.init),
-        "phi": create(PhiConfiguration.self, PhiModel.init),
-        "phi3": create(Phi3Configuration.self, Phi3Model.init),
-        "phimoe": create(PhiMoEConfiguration.self, PhiMoEModel.init),
-        "gemma": create(GemmaConfiguration.self, GemmaModel.init),
-        "gemma2": create(Gemma2Configuration.self, Gemma2Model.init),
-        "gemma3": create(Gemma3TextConfiguration.self, Gemma3TextModel.init),
-        "gemma3_text": create(Gemma3TextConfiguration.self, Gemma3TextModel.init),
-        "gemma3n": create(Gemma3nTextConfiguration.self, Gemma3nTextModel.init),
-        "qwen2": create(Qwen2Configuration.self, Qwen2Model.init),
-        "qwen3": create(Qwen3Configuration.self, Qwen3Model.init),
-        "qwen3_moe": create(Qwen3MoEConfiguration.self, Qwen3MoEModel.init),
-        "qwen3_next": create(Qwen3NextConfiguration.self, Qwen3NextModel.init),
-        "qwen3_5": create(Qwen35Configuration.self, Qwen35Model.init),
-        "qwen3_5_moe": create(Qwen35Configuration.self, Qwen35MoEModel.init),
-        "qwen3_5_text": create(Qwen35TextConfiguration.self, Qwen35TextModel.init),
-        "minicpm": create(MiniCPMConfiguration.self, MiniCPMModel.init),
-        "starcoder2": create(Starcoder2Configuration.self, Starcoder2Model.init),
-        "cohere": create(CohereConfiguration.self, CohereModel.init),
-        "openelm": create(OpenElmConfiguration.self, OpenELMModel.init),
-        "internlm2": create(InternLM2Configuration.self, InternLM2Model.init),
-        "deepseek_v3": create(DeepseekV3Configuration.self, DeepseekV3Model.init),
-        "granite": create(GraniteConfiguration.self, GraniteModel.init),
-        "granitemoehybrid": create(
-            GraniteMoeHybridConfiguration.self, GraniteMoeHybridModel.init),
-        "mimo": create(MiMoConfiguration.self, MiMoModel.init),
-        "mimo_v2_flash": create(MiMoV2FlashConfiguration.self, MiMoV2FlashModel.init),
-        "minimax": create(MiniMaxConfiguration.self, MiniMaxModel.init),
-        "glm4": create(GLM4Configuration.self, GLM4Model.init),
-        "glm4_moe": create(GLM4MoEConfiguration.self, GLM4MoEModel.init),
-        "glm4_moe_lite": create(GLM4MoELiteConfiguration.self, GLM4MoELiteModel.init),
-        "acereason": create(Qwen2Configuration.self, Qwen2Model.init),
-        "falcon_h1": create(FalconH1Configuration.self, FalconH1Model.init),
-        "bitnet": create(BitnetConfiguration.self, BitnetModel.init),
-        "smollm3": create(SmolLM3Configuration.self, SmolLM3Model.init),
-        "ernie4_5": create(Ernie45Configuration.self, Ernie45Model.init),
-        "lfm2": create(LFM2Configuration.self, LFM2Model.init),
-        "baichuan_m1": create(BaichuanM1Configuration.self, BaichuanM1Model.init),
-        "exaone4": create(Exaone4Configuration.self, Exaone4Model.init),
-        "gpt_oss": create(GPTOSSConfiguration.self, GPTOSSModel.init),
-        "lille-130m": create(Lille130mConfiguration.self, Lille130mModel.init),
-        "olmoe": create(OlmoEConfiguration.self, OlmoEModel.init),
-        "olmo2": create(Olmo2Configuration.self, Olmo2Model.init),
-        "olmo3": create(Olmo3Configuration.self, Olmo3Model.init),
-        "bailing_moe": create(BailingMoeConfiguration.self, BailingMoeModel.init),
-        "lfm2_moe": create(LFM2MoEConfiguration.self, LFM2MoEModel.init),
-        "nanochat": create(NanoChatConfiguration.self, NanoChatModel.init),
-        "nemotron_h": create(NemotronHConfiguration.self, NemotronHModel.init),
-        "afmoe": create(AfMoEConfiguration.self, AfMoEModel.init),
-        "jamba_3b": create(JambaConfiguration.self, JambaModel.init),
-        "mistral3": create(Mistral3TextConfiguration.self, Mistral3TextModel.init),
-        "apertus": create(ApertusConfiguration.self, ApertusModel.init),
-    ])
+    public static let shared: ModelTypeRegistry = .init(
+        creators: coreModels().merging(extendedModels()) { a, _ in a }
+            .merging(additionalModels()) { a, _ in a }
+    )
 }
 
 /// Registry of models and any overrides that go with them, e.g. prompt augmentation.
@@ -352,6 +372,24 @@ public class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
         defaultPrompt: ""
     )
 
+    static public let gemma4_27b_it_4bit = ModelConfiguration(
+        id: "mlx-community/gemma-4-27b-it-4bit",
+        defaultPrompt: "Explain quantum computing briefly.",
+        extraEOSTokens: ["<end_of_turn>"]
+    )
+
+    static public let gemma4_12b_it_4bit = ModelConfiguration(
+        id: "mlx-community/gemma-4-12b-it-4bit",
+        defaultPrompt: "What is the meaning of life?",
+        extraEOSTokens: ["<end_of_turn>"]
+    )
+
+    static public let gemma4_27b_it_qat_4bit = ModelConfiguration(
+        id: "mlx-community/gemma-4-27b-it-qat-4bit",
+        defaultPrompt: "Explain quantum computing briefly.",
+        extraEOSTokens: ["<end_of_turn>"]
+    )
+
     private static func all() -> [ModelConfiguration] {
         [
             codeLlama13b4bit,
@@ -403,6 +441,9 @@ public class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
             nanochat_d20_mlx,
             gpt_oss_20b_MXFP4_Q8,
             jamba_3b,
+            gemma4_27b_it_4bit,
+            gemma4_12b_it_4bit,
+            gemma4_27b_it_qat_4bit,
         ]
     }
 
@@ -523,13 +564,23 @@ public final class LLMModelFactory: ModelFactory {
             mutableConfiguration.toolCallFormat = ToolCallFormat.infer(from: baseConfig.modelType)
         }
 
+        // Detect JANG model — if jang_config.json exists, load it for per-layer quantization.
+        // Standard MLX models skip this entirely (jangConfig stays nil).
+        let jangConfig: JangConfig?
+        if JangLoader.isJangModel(at: modelDirectory) {
+            jangConfig = try JangLoader.loadConfig(at: modelDirectory)
+        } else {
+            jangConfig = nil
+        }
+
         // Load tokenizer and weights in parallel
         async let tokenizerTask = tokenizerLoader.load(
             from: configuration.tokenizerDirectory)
 
         try loadWeights(
             modelDirectory: modelDirectory, model: model,
-            perLayerQuantization: baseConfig.perLayerQuantization)
+            perLayerQuantization: baseConfig.perLayerQuantization,
+            jangConfig: jangConfig)
 
         let tokenizer = try await tokenizerTask
 

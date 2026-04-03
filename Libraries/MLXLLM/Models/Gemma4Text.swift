@@ -1,0 +1,639 @@
+// Copyright © 2024-2026 Jinho Jang (eric@jangq.ai)
+//
+// Gemma 4 text model — supports both:
+//   - 26B MoE (128 experts, top-8, parallel MLP+MoE, GELU, softmax routing)
+//   - 31B Dense (no MoE, standard MLP-only feedforward)
+// Mixed sliding/full attention with per-layer head dims, K=V sharing, and RoPE config.
+//
+// Python reference: mlx_vlm/models/gemma4/language.py
+
+import Foundation
+import MLX
+import MLXLMCommon
+import MLXNN
+
+// MARK: - Norm Utilities
+
+/// Standard RMSNorm for Gemma4 — weight used directly, NO +1 offset.
+/// (Gemma3 uses 1.0 + weight; Gemma4 does NOT)
+class Gemma4RMSNorm: Module, UnaryLayer {
+    let weight: MLXArray
+    let eps: Float
+
+    init(dimensions: Int, eps: Float = 1e-6) {
+        self.weight = MLXArray.ones([dimensions])
+        self.eps = eps
+        super.init()
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        MLXFast.rmsNorm(x, weight: weight, eps: eps)
+    }
+}
+
+/// RMSNorm without learnable weight (RMSNormNoScale).
+/// Used for v_norm and router's internal norm.
+/// Python: mx.fast.rms_norm(x, None, eps) — MLXFast.rmsNorm doesn't support nil weight,
+/// so we implement manually.
+func rmsNormNoScale(_ x: MLXArray, eps: Float = 1e-6) -> MLXArray {
+    let variance = (x * x).mean(axis: -1, keepDims: true)
+    return x * rsqrt(variance + eps)
+}
+
+// MARK: - Configuration
+
+public struct Gemma4TextConfiguration: Codable, Sendable {
+    let modelType: String
+    let hiddenSize: Int
+    let numHiddenLayers: Int
+    let numAttentionHeads: Int
+    let numKeyValueHeads: Int
+    let numGlobalKeyValueHeads: Int
+    let headDim: Int
+    let globalHeadDim: Int
+    let intermediateSize: Int
+    let vocabSize: Int
+    let rmsNormEps: Float
+    let slidingWindow: Int
+    let layerTypes: [String]
+    let finalLogitSoftcapping: Float?
+    let tieWordEmbeddings: Bool
+    let attentionBias: Bool
+    let attentionKEqV: Bool
+
+    // MoE fields — only present when enableMoeBlock is true
+    let enableMoeBlock: Bool
+    let moeIntermediateSize: Int
+    let numExperts: Int
+    let topKExperts: Int
+
+    // RoPE parameters per layer type
+    let ropeTraditional: Bool
+    let ropeParameters: [String: [String: StringOrNumber]]
+
+    enum CodingKeys: String, CodingKey {
+        case modelType = "model_type"
+        case hiddenSize = "hidden_size"
+        case numHiddenLayers = "num_hidden_layers"
+        case numAttentionHeads = "num_attention_heads"
+        case numKeyValueHeads = "num_key_value_heads"
+        case numGlobalKeyValueHeads = "num_global_key_value_heads"
+        case headDim = "head_dim"
+        case globalHeadDim = "global_head_dim"
+        case intermediateSize = "intermediate_size"
+        case vocabSize = "vocab_size"
+        case rmsNormEps = "rms_norm_eps"
+        case slidingWindow = "sliding_window"
+        case layerTypes = "layer_types"
+        case finalLogitSoftcapping = "final_logit_softcapping"
+        case tieWordEmbeddings = "tie_word_embeddings"
+        case attentionBias = "attention_bias"
+        case attentionKEqV = "attention_k_eq_v"
+        case enableMoeBlock = "enable_moe_block"
+        case moeIntermediateSize = "moe_intermediate_size"
+        case numExperts = "num_experts"
+        case topKExperts = "top_k_experts"
+        case ropeTraditional = "rope_traditional"
+        case ropeParameters = "rope_parameters"
+    }
+
+    enum VLMCodingKeys: String, CodingKey {
+        case textConfig = "text_config"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let nestedContainer = try decoder.container(keyedBy: VLMCodingKeys.self)
+
+        let container =
+            if nestedContainer.contains(.textConfig) {
+                try nestedContainer.nestedContainer(keyedBy: CodingKeys.self, forKey: .textConfig)
+            } else {
+                try decoder.container(keyedBy: CodingKeys.self)
+            }
+
+        modelType = try container.decode(String.self, forKey: .modelType)
+        hiddenSize = try container.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 2816
+        numHiddenLayers = try container.decodeIfPresent(Int.self, forKey: .numHiddenLayers) ?? 30
+        numAttentionHeads =
+            try container.decodeIfPresent(Int.self, forKey: .numAttentionHeads) ?? 16
+        numKeyValueHeads =
+            try container.decodeIfPresent(Int.self, forKey: .numKeyValueHeads) ?? 8
+        numGlobalKeyValueHeads =
+            try container.decodeIfPresent(Int.self, forKey: .numGlobalKeyValueHeads) ?? 2
+        headDim = try container.decodeIfPresent(Int.self, forKey: .headDim) ?? 256
+        globalHeadDim = try container.decodeIfPresent(Int.self, forKey: .globalHeadDim) ?? 512
+        intermediateSize =
+            try container.decodeIfPresent(Int.self, forKey: .intermediateSize) ?? 2112
+        vocabSize = try container.decodeIfPresent(Int.self, forKey: .vocabSize) ?? 262144
+        rmsNormEps = try container.decodeIfPresent(Float.self, forKey: .rmsNormEps) ?? 1e-6
+        slidingWindow = try container.decodeIfPresent(Int.self, forKey: .slidingWindow) ?? 1024
+        layerTypes = try container.decodeIfPresent([String].self, forKey: .layerTypes) ?? []
+        finalLogitSoftcapping =
+            try container.decodeIfPresent(Float.self, forKey: .finalLogitSoftcapping)
+        tieWordEmbeddings =
+            try container.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings) ?? true
+        attentionBias = try container.decodeIfPresent(Bool.self, forKey: .attentionBias) ?? false
+        attentionKEqV = try container.decodeIfPresent(Bool.self, forKey: .attentionKEqV) ?? false
+
+        enableMoeBlock =
+            try container.decodeIfPresent(Bool.self, forKey: .enableMoeBlock) ?? false
+        moeIntermediateSize =
+            try container.decodeIfPresent(Int.self, forKey: .moeIntermediateSize) ?? 0
+        numExperts = try container.decodeIfPresent(Int.self, forKey: .numExperts) ?? 0
+        topKExperts = try container.decodeIfPresent(Int.self, forKey: .topKExperts) ?? 0
+        ropeTraditional =
+            try container.decodeIfPresent(Bool.self, forKey: .ropeTraditional) ?? false
+        ropeParameters =
+            try container.decodeIfPresent(
+                [String: [String: StringOrNumber]].self, forKey: .ropeParameters) ?? [:]
+    }
+}
+
+// MARK: - Attention
+
+class Gemma4Attention: Module {
+    let nHeads: Int
+    let nKVHeads: Int
+    let headDim: Int
+    let scale: Float
+    let isSliding: Bool
+    let useKEqV: Bool
+    let eps: Float
+
+    @ModuleInfo(key: "q_proj") var queryProj: Linear
+    @ModuleInfo(key: "k_proj") var keyProj: Linear
+    @ModuleInfo(key: "v_proj") var valueProj: Linear?
+    @ModuleInfo(key: "o_proj") var outputProj: Linear
+    @ModuleInfo(key: "q_norm") var queryNorm: Gemma4RMSNorm
+    @ModuleInfo(key: "k_norm") var keyNorm: Gemma4RMSNorm
+    // v_norm is RMSNormNoScale (no learnable weight, not in checkpoint)
+
+    @ModuleInfo var rope: RoPELayer
+
+    init(_ config: Gemma4TextConfiguration, layerIndex: Int) {
+        let layerType =
+            layerIndex < config.layerTypes.count
+            ? config.layerTypes[layerIndex] : "sliding_attention"
+        self.isSliding = layerType == "sliding_attention"
+        self.eps = config.rmsNormEps
+
+        // K=V sharing: full attention layers with attention_k_eq_v=true
+        self.useKEqV = config.attentionKEqV && !isSliding
+
+        if isSliding {
+            self.nHeads = config.numAttentionHeads
+            self.nKVHeads = config.numKeyValueHeads
+            self.headDim = config.headDim
+        } else {
+            self.nHeads = config.numAttentionHeads
+            self.nKVHeads = config.numGlobalKeyValueHeads
+            self.headDim = config.globalHeadDim
+        }
+
+        // Gemma4 attention scale = 1.0 (NOT 1/sqrt(head_dim))
+        self.scale = 1.0
+
+        self._queryProj.wrappedValue = Linear(
+            config.hiddenSize, nHeads * headDim, bias: config.attentionBias)
+        self._keyProj.wrappedValue = Linear(
+            config.hiddenSize, nKVHeads * headDim, bias: config.attentionBias)
+        if !useKEqV {
+            self._valueProj.wrappedValue = Linear(
+                config.hiddenSize, nKVHeads * headDim, bias: config.attentionBias)
+        }
+        self._outputProj.wrappedValue = Linear(
+            nHeads * headDim, config.hiddenSize, bias: config.attentionBias)
+
+        self._queryNorm.wrappedValue = Gemma4RMSNorm(
+            dimensions: headDim, eps: config.rmsNormEps)
+        self._keyNorm.wrappedValue = Gemma4RMSNorm(
+            dimensions: headDim, eps: config.rmsNormEps)
+
+        // RoPE from config rope_parameters
+        let layerKey = isSliding ? "sliding_attention" : "full_attention"
+        let ropeParams = config.ropeParameters[layerKey] ?? [:]
+        let ropeTheta = ropeParams["rope_theta"]?.asFloat() ?? (isSliding ? 10000.0 : 1_000_000.0)
+        let partialRotaryFactor = ropeParams["partial_rotary_factor"]?.asFloat() ?? (isSliding ? 1.0 : 0.25)
+        let ropeDims = max(1, Int(Float(headDim) * partialRotaryFactor))
+
+        self.rope = initializeRope(
+            dims: ropeDims, base: ropeTheta, traditional: config.ropeTraditional,
+            scalingConfig: nil, maxPositionEmbeddings: nil)
+
+        super.init()
+    }
+
+    func callAsFunction(
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache? = nil
+    ) -> MLXArray {
+        let (B, L) = (x.dim(0), x.dim(1))
+
+        var queries = queryProj(x).reshaped(B, L, nHeads, headDim)
+        queries = queryNorm(queries)
+
+        var keys = keyProj(x).reshaped(B, L, nKVHeads, headDim)
+
+        // K=V: values = raw k_proj output (before k_norm), then v_norm applied
+        let values: MLXArray
+        if useKEqV {
+            values = rmsNormNoScale(keys, eps: eps)
+        } else if let valueProj {
+            values = rmsNormNoScale(valueProj(x).reshaped(B, L, nKVHeads, headDim), eps: eps)
+        } else {
+            values = rmsNormNoScale(keys, eps: eps)
+        }
+
+        keys = keyNorm(keys)
+
+        // Transpose to [B, heads, L, dim]
+        let valuesT = values.transposed(0, 2, 1, 3)
+        var keysT = keys.transposed(0, 2, 1, 3)
+        keysT = applyRotaryPosition(rope, to: keysT, cache: cache)
+
+        queries = queries.transposed(0, 2, 1, 3)
+        queries = applyRotaryPosition(rope, to: queries, cache: cache)
+
+        let output = attentionWithCacheUpdate(
+            queries: queries,
+            keys: keysT,
+            values: valuesT,
+            cache: cache,
+            scale: scale,
+            mask: mask
+        )
+        .transposed(0, 2, 1, 3)
+        .reshaped(B, L, -1)
+
+        return outputProj(output)
+    }
+}
+
+// MARK: - Dense MLP
+
+class Gemma4MLP: Module {
+    @ModuleInfo(key: "gate_proj") var gateProj: Linear
+    @ModuleInfo(key: "up_proj") var upProj: Linear
+    @ModuleInfo(key: "down_proj") var downProj: Linear
+
+    init(dimensions: Int, hiddenDimensions: Int) {
+        self._gateProj.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
+        self._upProj.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
+        self._downProj.wrappedValue = Linear(hiddenDimensions, dimensions, bias: false)
+        super.init()
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        downProj(geluApproximate(gateProj(x)) * upProj(x))
+    }
+}
+
+// MARK: - Router (Softmax, with RMSNormNoScale pre-norm)
+
+class Gemma4Router: Module {
+    @ModuleInfo(key: "proj") var proj: Linear
+    @ModuleInfo(key: "scale") var routerScale: MLXArray
+    @ModuleInfo(key: "per_expert_scale") var perExpertScale: MLXArray
+    // norm is RMSNormNoScale (no learnable weight, not in checkpoint)
+
+    let numExperts: Int
+    let topK: Int
+    let rootSize: Float
+    let eps: Float
+
+    init(_ config: Gemma4TextConfiguration) {
+        self.numExperts = config.numExperts
+        self.topK = config.topKExperts
+        self.rootSize = pow(Float(config.hiddenSize), -0.5)
+        self.eps = config.rmsNormEps
+        self._proj.wrappedValue = Linear(config.hiddenSize, config.numExperts, bias: false)
+        self._routerScale.wrappedValue = MLXArray.ones([config.hiddenSize])
+        self._perExpertScale.wrappedValue = MLXArray.ones([config.numExperts])
+        super.init()
+    }
+
+    func callAsFunction(_ x: MLXArray) -> (indices: MLXArray, weights: MLXArray) {
+        // Pre-norm (RMSNormNoScale — no learnable weight)
+        var h = rmsNormNoScale(x, eps: eps)
+        h = h * rootSize
+        h = h * routerScale
+
+        let expertScores = proj(h)
+        let routerProbs = softmax(expertScores.asType(.float32), axis: -1)
+
+        // Top-K via argPartition on negated scores (get highest scores)
+        let topKIndices = argPartition(
+            MLXArray(0) - expertScores.asType(.float32),
+            kth: topK - 1, axis: -1
+        )[.ellipsis, ..<topK]
+
+        var topKWeights = takeAlong(routerProbs, topKIndices, axis: -1)
+        // Renormalize
+        topKWeights = topKWeights / topKWeights.sum(axis: -1, keepDims: true)
+        // Per-expert scale indexed by selected experts
+        topKWeights = topKWeights * perExpertScale[topKIndices]
+
+        return (indices: topKIndices, weights: topKWeights)
+    }
+}
+
+// MARK: - Experts wrapper (matches Python's experts.switch_glu module tree)
+
+class Gemma4Experts: Module {
+    @ModuleInfo(key: "switch_glu") var switchGLU: SwitchGLU
+
+    init(_ config: Gemma4TextConfiguration) {
+        self._switchGLU.wrappedValue = SwitchGLU(
+            inputDims: config.hiddenSize,
+            hiddenDims: config.moeIntermediateSize,
+            numExperts: config.numExperts,
+            activation: { geluApproximate($0) },
+            bias: false)
+        super.init()
+    }
+
+    func callAsFunction(
+        _ x: MLXArray, indices: MLXArray, weights: MLXArray
+    ) -> MLXArray {
+        let (B, S, H) = (x.dim(0), x.dim(1), x.dim(2))
+        let K = indices.dim(-1)
+
+        let xFlat = x.reshaped(B * S, H)
+        let indicesFlat = indices.reshaped(B * S, K)
+
+        let expertOut = switchGLU(xFlat, indicesFlat)
+
+        let weightsFlat = expandedDimensions(weights.reshaped(B * S, K), axis: -1)
+        return (expertOut * weightsFlat).sum(axis: -2).reshaped(B, S, H)
+    }
+}
+
+// MARK: - Decoder Layer (Dense and MoE)
+
+class Gemma4DecoderLayer: Module {
+    let hasMoE: Bool
+
+    @ModuleInfo(key: "self_attn") var selfAttention: Gemma4Attention
+    @ModuleInfo var mlp: Gemma4MLP
+
+    // MoE components (nil for dense models)
+    @ModuleInfo var router: Gemma4Router?
+    @ModuleInfo var experts: Gemma4Experts?
+
+    @ModuleInfo(key: "input_layernorm") var inputLayernorm: Gemma4RMSNorm
+    @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayernorm: Gemma4RMSNorm
+    @ModuleInfo(key: "pre_feedforward_layernorm") var preFeedforwardLayernorm: Gemma4RMSNorm
+    @ModuleInfo(key: "post_feedforward_layernorm") var postFeedforwardLayernorm: Gemma4RMSNorm
+
+    // MoE-only norms (nil for dense models)
+    @ModuleInfo(key: "pre_feedforward_layernorm_2") var preFeedforwardLayernorm2: Gemma4RMSNorm?
+    @ModuleInfo(key: "post_feedforward_layernorm_1") var postFeedforwardLayernorm1: Gemma4RMSNorm?
+    @ModuleInfo(key: "post_feedforward_layernorm_2") var postFeedforwardLayernorm2: Gemma4RMSNorm?
+
+    @ModuleInfo(key: "layer_scalar") var layerScalar: MLXArray
+
+    init(_ config: Gemma4TextConfiguration, layerIndex: Int) {
+        self.hasMoE = config.enableMoeBlock && config.numExperts > 0
+
+        self._selfAttention.wrappedValue = Gemma4Attention(config, layerIndex: layerIndex)
+        self.mlp = Gemma4MLP(
+            dimensions: config.hiddenSize, hiddenDimensions: config.intermediateSize)
+
+        if hasMoE {
+            self.router = Gemma4Router(config)
+            self.experts = Gemma4Experts(config)
+            self._preFeedforwardLayernorm2.wrappedValue = Gemma4RMSNorm(
+                dimensions: config.hiddenSize, eps: config.rmsNormEps)
+            self._postFeedforwardLayernorm1.wrappedValue = Gemma4RMSNorm(
+                dimensions: config.hiddenSize, eps: config.rmsNormEps)
+            self._postFeedforwardLayernorm2.wrappedValue = Gemma4RMSNorm(
+                dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        }
+
+        self._inputLayernorm.wrappedValue = Gemma4RMSNorm(
+            dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        self._postAttentionLayernorm.wrappedValue = Gemma4RMSNorm(
+            dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        self._preFeedforwardLayernorm.wrappedValue = Gemma4RMSNorm(
+            dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        self._postFeedforwardLayernorm.wrappedValue = Gemma4RMSNorm(
+            dimensions: config.hiddenSize, eps: config.rmsNormEps)
+
+        self._layerScalar.wrappedValue = MLXArray([Float(1.0)])
+
+        super.init()
+    }
+
+    func callAsFunction(
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache? = nil
+    ) -> MLXArray {
+        // Attention block
+        var residual = x
+        var h = selfAttention(inputLayernorm(x), mask: mask, cache: cache)
+        h = postAttentionLayernorm(h)
+        h = residual + h
+
+        residual = h
+
+        if hasMoE, let router, let experts,
+            let preFeedforwardLayernorm2,
+            let postFeedforwardLayernorm1,
+            let postFeedforwardLayernorm2
+        {
+            // MoE: parallel dense MLP + expert branches
+            // Path 1: dense MLP
+            var h1 = preFeedforwardLayernorm(h)
+            h1 = mlp(h1)
+            h1 = postFeedforwardLayernorm1(h1)
+
+            // Path 2: router → experts
+            let (topKIndices, topKWeights) = router(h)
+            var h2 = preFeedforwardLayernorm2(h)
+            h2 = experts(h2, indices: topKIndices, weights: topKWeights)
+            h2 = postFeedforwardLayernorm2(h2)
+
+            h = h1 + h2
+        } else {
+            // Dense: standard MLP
+            h = preFeedforwardLayernorm(h)
+            h = mlp(h)
+        }
+
+        h = postFeedforwardLayernorm(h)
+        h = residual + h
+
+        // Layer scalar
+        h = h * layerScalar.asType(h.dtype)
+
+        return h
+    }
+}
+
+// MARK: - Inner Model
+
+public class Gemma4Model: Module {
+    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
+    @ModuleInfo var layers: [Gemma4DecoderLayer]
+    @ModuleInfo var norm: Gemma4RMSNorm
+
+    let config: Gemma4TextConfiguration
+
+    init(_ config: Gemma4TextConfiguration) {
+        self.config = config
+        self._embedTokens.wrappedValue = Embedding(
+            embeddingCount: config.vocabSize, dimensions: config.hiddenSize)
+        self._layers.wrappedValue = (0 ..< config.numHiddenLayers).map { i in
+            Gemma4DecoderLayer(config, layerIndex: i)
+        }
+        self.norm = Gemma4RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        super.init()
+    }
+
+    func callAsFunction(
+        _ inputs: MLXArray, cache: [KVCache?]? = nil
+    ) -> MLXArray {
+        var h = embedTokens(inputs)
+        h = h * MLXArray(sqrt(Float(config.hiddenSize)), dtype: .bfloat16).asType(h.dtype)
+
+        var layerCache = cache ?? Array(repeating: nil as KVCache?, count: layers.count)
+
+        // Build masks per layer type
+        let globalLayerIdx = config.layerTypes.firstIndex(of: "full_attention")
+            ?? (config.numHiddenLayers - 1)
+        let slidingLayerIdx = config.layerTypes.firstIndex(of: "sliding_attention") ?? 0
+
+        let globalCache: KVCache? = cache.flatMap {
+            globalLayerIdx < $0.count ? $0[globalLayerIdx] : nil
+        }
+        let slidingCache: KVCache? = cache.flatMap {
+            slidingLayerIdx < $0.count ? $0[slidingLayerIdx] : nil
+        }
+
+        let globalMask = createAttentionMask(h: h, cache: globalCache)
+        let slidingWindowMask = createAttentionMask(
+            h: h, cache: slidingCache, windowSize: config.slidingWindow)
+
+        for (i, layer) in layers.enumerated() {
+            let layerType =
+                i < config.layerTypes.count ? config.layerTypes[i] : "sliding_attention"
+            let isGlobal = layerType == "full_attention"
+            let layerMask = isGlobal ? globalMask : slidingWindowMask
+            h = layer(h, mask: layerMask, cache: layerCache[i])
+        }
+
+        return norm(h)
+    }
+}
+
+// MARK: - Top-Level Model
+
+public class Gemma4TextModel: Module, LLMModel {
+
+    @ModuleInfo public var model: Gemma4Model
+    @ModuleInfo(key: "lm_head") var lmHead: Linear?
+
+    public let config: Gemma4TextConfiguration
+    public var vocabularySize: Int { config.vocabSize }
+
+    public init(_ config: Gemma4TextConfiguration) {
+        self.config = config
+        self.model = Gemma4Model(config)
+        if !config.tieWordEmbeddings {
+            self._lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabSize, bias: false)
+        }
+        super.init()
+    }
+
+    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
+        var out = model(inputs, cache: cache)
+
+        if let lmHead {
+            out = lmHead(out)
+        } else {
+            out = model.embedTokens.asLinear(out)
+        }
+
+        if let cap = config.finalLogitSoftcapping, cap > 0 {
+            out = tanh(out / cap) * cap
+        }
+
+        return out
+    }
+
+    public func sanitize(weights: [String: MLXArray], metadata: [String: String]) -> [String:
+        MLXArray]
+    {
+        var processedWeights = [String: MLXArray]()
+
+        for (key, value) in weights {
+            var newKey = key
+
+            // Strip VLM prefixes: model.language_model.X → model.X (JANG)
+            if newKey.hasPrefix("model.language_model.") {
+                newKey = "model." + String(newKey.dropFirst("model.language_model.".count))
+            }
+            // Strip VLM prefixes: language_model.X → X (mlx-community)
+            else if newKey.hasPrefix("language_model.") {
+                newKey = String(newKey.dropFirst("language_model.".count))
+            }
+
+            // Skip vision/projector weights
+            if newKey.hasPrefix("vision_tower.") || newKey.hasPrefix("model.vision_tower.")
+                || newKey.hasPrefix("multi_modal_projector.")
+                || newKey.hasPrefix("model.embed_vision.")
+                || newKey.hasPrefix("embed_vision.")
+            {
+                continue
+            }
+
+            // Remap JANG expert naming to match module tree:
+            // JANG uses:          switch_mlp.{gate,up,down}_proj.*
+            // mlx-community uses: experts.switch_glu.{gate,up,down}_proj.*
+            // Module tree expects: experts.switch_glu.{gate,up,down}_proj.*
+            if newKey.contains(".switch_mlp.") {
+                newKey = newKey.replacingOccurrences(of: ".switch_mlp.", with: ".experts.switch_glu.")
+            }
+
+            processedWeights[newKey] = value
+        }
+
+        // Trim vocab-dimension tensors to match config
+        let expectedVocab = config.vocabSize
+        for key in [
+            "model.embed_tokens.weight", "model.embed_tokens.scales",
+            "model.embed_tokens.biases",
+            "lm_head.weight", "lm_head.scales", "lm_head.biases",
+        ] {
+            if let w = processedWeights[key], w.dim(0) != expectedVocab {
+                processedWeights[key] = w[0 ..< expectedVocab]
+            }
+        }
+
+        return processedWeights
+    }
+
+    // Per-layer-type cache: RotatingKVCache for sliding, KVCacheSimple for full attention
+    public func newCache(parameters: GenerateParameters?) -> [KVCache] {
+        (0 ..< config.numHiddenLayers).map { i in
+            let layerType =
+                i < config.layerTypes.count ? config.layerTypes[i] : "sliding_attention"
+            if layerType == "full_attention" {
+                if let maxKVSize = parameters?.maxKVSize {
+                    return RotatingKVCache(maxSize: maxKVSize, keep: 4)
+                }
+                return KVCacheSimple()
+            } else {
+                return RotatingKVCache(maxSize: config.slidingWindow, keep: 0)
+            }
+        }
+    }
+}
+
+extension Gemma4TextModel: LoRAModel {
+    public var loraLayers: [Module] {
+        model.layers
+    }
+}
