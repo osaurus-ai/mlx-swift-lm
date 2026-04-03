@@ -71,6 +71,9 @@ public struct ModelContext {
     public var processor: any UserInputProcessor
     public var tokenizer: Tokenizer
 
+    /// Whether this model supports vision/image input (is a VLM).
+    public var isVLM: Bool { model is VisionLanguageModelProtocol }
+
     public init(
         configuration: ModelConfiguration, model: any LanguageModel,
         processor: any UserInputProcessor, tokenizer: any Tokenizer

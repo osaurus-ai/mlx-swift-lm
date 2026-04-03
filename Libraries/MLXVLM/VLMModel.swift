@@ -3,5 +3,5 @@
 import MLX
 import MLXLMCommon
 
-public protocol VLMModel: LanguageModel, LoRAModel {
+public protocol VLMModel: VisionLanguageModelProtocol, LoRAModel {
 }

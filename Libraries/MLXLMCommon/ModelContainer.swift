@@ -50,6 +50,13 @@ public final class ModelContainer: Sendable {
         }
     }
 
+    /// Whether this model supports vision/image input (is a VLM).
+    public var isVLM: Bool {
+        get async {
+            await context.read { $0.isVLM }
+        }
+    }
+
     public init(context: consuming ModelContext) {
         self.context = .init(context)
     }

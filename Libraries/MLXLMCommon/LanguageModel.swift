@@ -142,6 +142,12 @@ public enum PrepareResult {
     case logits(LMOutput)
 }
 
+/// Marker protocol for models that support vision/image input.
+///
+/// Conforming to this protocol indicates the model can process images alongside text.
+/// Use ``ModelContext/isVLM`` or ``ModelContainer/isVLM`` to check at runtime.
+public protocol VisionLanguageModelProtocol: LanguageModel {}
+
 /// Interface for all Language Models (e.g. LLM, VLM).
 ///
 /// The language model is typically called by the ``TokenIterator`` and it:
