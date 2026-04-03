@@ -241,18 +241,39 @@ Neither `LLMRegistry` nor `VLMRegistry` have named `ModelConfiguration` entries 
 | File | Lines Changed | Purpose |
 |------|:------------:|---------|
 | `Libraries/MLXLLM/Models/Gemma4Text.swift` | NEW (640 lines) | Full Gemma4 text model: dense + MoE, dual attention types, v_norm, k_eq_v |
+| `Libraries/MLXVLM/Models/Gemma4.swift` | NEW (780 lines) | Full Gemma4 VLM: vision encoder, 2D RoPE, pooler, processor, inline text model |
 | `Libraries/MLXLMCommon/JangLoader.swift` | NEW (~400 lines) | JANG detection, config parsing, per-layer quantization inference |
 | `Libraries/MLXLMCommon/Load.swift` | Modified | JANG integration, per-layer quantization key remapping |
-| `Libraries/MLXLLM/LLMModelFactory.swift` | Modified | JANG detection + `"gemma4"` / `"gemma4_text"` registration |
-| `Libraries/MLXVLM/VLMModelFactory.swift` | Modified | JANG detection (VLM path) |
+| `Libraries/MLXLLM/LLMModelFactory.swift` | Modified | JANG detection + `"gemma4"` / `"gemma4_text"` registration + ModelConfig entries |
+| `Libraries/MLXVLM/VLMModelFactory.swift` | Modified | JANG detection, `"gemma4"` VLM + `"Gemma4Processor"` registration |
 | `TestRunner/` | NEW | Test harness for local model loading |
 
 ---
 
-## Recommended Next Steps
+## Completed Fix History
 
-1. **R4 — Investigate 31B JANG tokenizer issue** (quick fix, likely missing file)
-2. **R3 — Replace `try?` with proper error handling** for JANG config load (5 min fix)
-3. **R1 — Gemma4 VLM support** (significant effort, new `Gemma4.swift` in MLXVLM)
-4. **R5 — Add ModelConfiguration entries** for popular Gemma4 HuggingFace model IDs
-5. **R2 — 2B/4B model features** (defer until those models exist as MLX/JANG checkpoints)
+All items from the original audit are resolved:
+
+| Item | Status | Commit |
+|------|--------|--------|
+| C1 — RMSNorm +1 offset | FIXED | `ab1790b` |
+| C2 — Dense 31B MoE crash | FIXED | `ab1790b` |
+| C3 — Expert key mismatch | FIXED | `ab1790b` |
+| C4 — Router wrong (sigmoid→softmax) | FIXED | `ab1790b` |
+| C5 — Missing v_norm | FIXED | `ab1790b` |
+| H1 — K=V sharing | FIXED | `ab1790b` |
+| H2 — Dense norm placement | FIXED | `ab1790b` |
+| M1 — Per-layer cache strategy | FIXED | `ab1790b` |
+| M3 — Hardcoded RoPE | FIXED | `ab1790b` |
+| R1 — VLM support | FIXED | `6c5b8fd` |
+| R3 — try? silent fallback | FIXED | `f3e50ab` |
+| R4 — 31B JANG tokenizer | NOT A BUG (TestRunner issue) |
+| R5 — ModelConfiguration entries | FIXED | `f3e50ab` |
+| VLM BUG 1 — .linear. key stripping | FIXED | latest |
+| VLM BUG 2 — Pooler mask inversion | FIXED | latest |
+
+## Remaining Known Limitations
+
+1. **Audio encoder** — Gemma 4 supports audio natively but the Swift audio encoder is not yet implemented
+2. **2B/4B model features** — per-layer input gating, KV sharing, double-wide MLP not implemented (defer until models exist)
+3. **Raw HF checkpoints** — fused `gate_up_proj` splitting not implemented (JANG/mlx-community formats work)

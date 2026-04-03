@@ -375,7 +375,7 @@ private class VisionPooler: Module {
     }
     func callAsFunction(_ h: MLXArray, patchPos: MLXArray, padPos: MLXArray) -> (MLXArray, MLXArray) {
         let L = h.dim(1)
-        if L == defaultLen { return (h * rootH, padPos) }
+        if L == defaultLen { return (h * rootH, logicalNot(padPos)) }
         let k = Int(sqrt(Float(L / defaultLen)))
         let kSq = Float(k * k)
         let clamped = maximum(patchPos, MLXArray(Int32(0)))
@@ -700,6 +700,11 @@ public class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
                 nk = "language_model.model." + String(nk.dropFirst("language_model.".count))
             }
             if nk.contains(".switch_mlp.") { nk = nk.replacingOccurrences(of: ".switch_mlp.", with: ".experts.switch_glu.") }
+            // Vision tower uses ClippableLinear wrappers — checkpoint has .linear. segment
+            // that doesn't exist in our module tree (we use plain Linear)
+            if nk.hasPrefix("vision_tower.") && nk.contains(".linear.") {
+                nk = nk.replacingOccurrences(of: ".linear.", with: ".")
+            }
             p[nk] = v
         }
         let ev = config.textConfig.vocabSize

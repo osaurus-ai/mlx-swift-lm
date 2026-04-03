@@ -56,7 +56,7 @@ Llama, Mistral, Phi, Phi-3, Phi-MoE, Gemma, Gemma 2, Gemma 3, Gemma 3n, **Gemma 
 
 ### VLMs (15+ architectures)
 
-PaliGemma, Qwen2-VL, Qwen2.5-VL, Qwen3-VL, Qwen3.5, Qwen3.5-MoE, Gemma 3, SmolVLM2, FastVLM, Pixtral, Mistral3, LFM2-VL, GLM-OCR, Idefics3, and more.
+PaliGemma, Qwen2-VL, Qwen2.5-VL, Qwen3-VL, Qwen3.5, Qwen3.5-MoE, Gemma 3, **Gemma 4**, SmolVLM2, FastVLM, Pixtral, Mistral3, LFM2-VL, GLM-OCR, Idefics3, and more.
 
 ### Embedders
 
@@ -154,7 +154,7 @@ The entire pipeline is transparent. If `jang_config.json` doesn't exist, the sta
 
 Planned additions to this fork:
 
-- **Gemma 4 VLM** — Full vision-language support (vision encoder, processor, image token scattering)
+- ~~**Gemma 4 VLM**~~ ✅ Done — Full vision-language support (vision encoder, processor, image token scattering)
 - **Native TurboQuant** — Quantization-aware weight format for faster loading
 - **Paged KV Cache** — Memory-efficient caching for long contexts
 - **Hybrid SSM** — Support for state-space model layers (Mamba/Jamba-style)
@@ -235,11 +235,18 @@ let container = try await loadModelContainer(
 
 | File | Change | Purpose |
 |------|--------|---------|
-| `Libraries/MLXLLM/Models/Gemma4Text.swift` | New | Full Gemma 4 model (dense + MoE, dual attention, v_norm, K=V) |
+| `Libraries/MLXLLM/Models/Gemma4Text.swift` | New | Full Gemma 4 text model (dense + MoE, dual attention, v_norm, K=V) |
+| `Libraries/MLXVLM/Models/Gemma4.swift` | New | Gemma 4 VLM (vision encoder, 2D RoPE, pooler, processor) |
 | `Libraries/MLXLMCommon/JangLoader.swift` | New | JANG detection, config parsing, per-layer quantization inference |
 | `Libraries/MLXLMCommon/Load.swift` | Modified | JANG integration, per-layer quantization key remapping |
-| `Libraries/MLXLLM/LLMModelFactory.swift` | Modified | JANG detection, `gemma4` / `gemma4_text` registration |
-| `Libraries/MLXVLM/VLMModelFactory.swift` | Modified | JANG detection for VLM path |
+| `Libraries/MLXLLM/LLMModelFactory.swift` | Modified | JANG detection, `gemma4` / `gemma4_text` registration, model configs |
+| `Libraries/MLXVLM/VLMModelFactory.swift` | Modified | JANG detection, `gemma4` VLM + processor registration |
+
+## Known Limitations
+
+- **Raw HuggingFace checkpoints** — JANG and mlx-community pre-converted models are supported. Raw HF `transformers` checkpoints (with fused `gate_up_proj`) require conversion first.
+- **Audio input** — Gemma 4 supports audio natively, but the audio encoder is not yet implemented. Text and vision work fully.
+- **Gemma 4 2B/4B models** — The per-layer input gating and KV sharing features used by smaller Gemma 4 variants are not yet implemented. 26B and 31B work fully.
 
 ## License
 
