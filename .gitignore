@@ -102,3 +102,6 @@ MODEL-COMPAT-AUDIT.md
 FULL-AUDIT.md
 *.local.md
 
+
+# Internal audit docs
+*-AUDIT.md
