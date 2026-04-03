@@ -1620,41 +1620,88 @@ public func quantizedScaledDotProductAttention(
     return output
 }
 
-// MARK: - Dynamic Cache Quantization
+// MARK: - Dynamic Cache Quantization / Compression
 
-/// Dynamically quantize KV caches during generation if conditions are met
+/// Dynamically quantize or compress KV caches during generation.
 ///
-/// Converts regular caches to quantized caches when:
-/// - kvBits is specified
-/// - The cache is not already quantized
-/// - The cache offset is greater than quantizedKVStart
+/// Supports two modes:
+/// - **Affine quantization** (legacy `kvBits` path): Converts to `QuantizedKVCache`.
+///   Models must use `updateQuantized()` + `quantizedScaledDotProductAttention()`.
+/// - **TurboQuant compression** (`kvMode: .turboQuant`): Converts to `TurboQuantKVCache`.
+///   Returns float arrays — models need zero changes.
+///
+/// Only converts `KVCacheSimple` layers. `RotatingKVCache`, `MambaCache`, and
+/// already-converted caches are skipped automatically.
 ///
 /// - Parameters:
-///   - cache: Array of KV caches to potentially quantize
-///   - kvBits: Number of bits for quantization (nil = no quantization)
-///   - kvGroupSize: Group size for quantization
+///   - cache: Array of KV caches to potentially quantize/compress
+///   - kvBits: Number of bits for affine quantization (nil = no affine quantization)
+///   - kvGroupSize: Group size for affine quantization
 ///   - quantizedKVStart: Token count threshold to begin quantizing
+///   - kvMode: KV compression mode. When not `.none`, takes precedence over `kvBits`.
 public func maybeQuantizeKVCache(
     cache: inout [KVCache],
     kvBits: Int?,
     kvGroupSize: Int = 64,
-    quantizedKVStart: Int = 0
+    quantizedKVStart: Int = 0,
+    kvMode: KVQuantizationMode = .none
 ) {
+    guard !cache.isEmpty else { return }
+
+    // Find the first quantizable (KVCacheSimple) layer to check offset threshold.
+    // Hybrid models may have MambaCache/RotatingKVCache at layer 0, so we can't
+    // just check cache[0].
+    let firstSimple = cache.first { $0 is KVCacheSimple }
+
+    // TurboQuant mode takes precedence
+    switch kvMode {
+    case .turboQuant(let keyBits, let valueBits):
+        // Already compressed? Skip. Check if any layer is already TQ.
+        // TQ has a minimum threshold of 8 tokens — compressing fewer tokens
+        // than sink tokens (4) + a small buffer is wasteful and produces
+        // degenerate compressed representations.
+        let tqMinStart = max(quantizedKVStart, 8)
+        guard !cache.contains(where: { $0 is TurboQuantKVCache }),
+              let ref = firstSimple, ref.offset > tqMinStart
+        else { return }
+
+        for i in 0..<cache.count {
+            if let simpleCache = cache[i] as? KVCacheSimple {
+                cache[i] = TurboQuantKVCache.fromSimpleCache(
+                    simpleCache, keyBits: keyBits, valueBits: valueBits)
+            }
+            // RotatingKVCache, MambaCache, CacheList: skip (no KV to compress,
+            // or already manages its own memory)
+        }
+        return
+
+    case .affine(let bits, let groupSize):
+        guard !cache.contains(where: { $0 is QuantizedKVCache }),
+              let ref = firstSimple, ref.offset > quantizedKVStart
+        else { return }
+
+        for i in 0..<cache.count {
+            if let simpleCache = cache[i] as? KVCacheSimple {
+                cache[i] = simpleCache.toQuantized(groupSize: groupSize, bits: bits)
+            }
+        }
+        return
+
+    case .none:
+        break
+    }
+
+    // Legacy path: use kvBits if set
     guard let kvBits = kvBits,
-        !cache.isEmpty,
-        !(cache[0] is QuantizedKVCache),
-        cache[0].offset > quantizedKVStart
+        !cache.contains(where: { $0 is QuantizedKVCache }),
+        let ref = firstSimple, ref.offset > quantizedKVStart
     else {
         return
     }
 
-    for i in 0 ..< cache.count {
-        // Handle cache types that support quantization
+    for i in 0..<cache.count {
         if let simpleCache = cache[i] as? KVCacheSimple {
             cache[i] = simpleCache.toQuantized(groupSize: kvGroupSize, bits: kvBits)
         }
-        // TODO: RotatingKVCache.toQuantized() is not implemented yet, like in Python.
-        // When implemented, add: else if let rotatingCache = cache[i] as? RotatingKVCache { ... }
-        // MambaCache and CacheList don't use traditional KV quantization
     }
 }

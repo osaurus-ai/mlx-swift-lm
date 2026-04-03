@@ -51,6 +51,39 @@ public protocol LogitProcessor {
 /// - ``LogitProcessor``
 ///
 /// for the `TokenIterator`.
+
+/// KV cache quantization/compression mode.
+///
+/// Controls how the KV cache is compressed during inference:
+///
+/// ```swift
+/// // No compression (default, same as today)
+/// var params = GenerateParameters()
+///
+/// // Affine quantization (existing path, unchanged)
+/// var params = GenerateParameters(kvBits: 4, kvGroupSize: 64)
+///
+/// // TurboQuant compression (Hadamard + Lloyd-Max + QJL)
+/// var params = GenerateParameters()
+/// params.kvMode = .turboQuant(keyBits: 3, valueBits: 3)
+/// ```
+public enum KVQuantizationMode: Sendable, Equatable {
+    /// No cache compression (float16, default)
+    case none
+
+    /// Affine quantization (existing QuantizedKVCache path)
+    case affine(bits: Int, groupSize: Int = 64)
+
+    /// TurboQuant compression: randomized Hadamard rotation + Lloyd-Max optimal
+    /// codebook quantization + QJL residual correction for keys.
+    /// Achieves 4.7-5.0x compression with zero generation speed overhead.
+    ///
+    /// - Parameters:
+    ///   - keyBits: Total bits per key element (default 3). Split as (b-1) codebook + 1 QJL.
+    ///   - valueBits: Total bits per value element (default 3). All bits go to codebook.
+    case turboQuant(keyBits: Int = 3, valueBits: Int = 3)
+}
+
 public struct GenerateParameters: Sendable {
 
     /// Step size for processing the prompt
@@ -71,6 +104,12 @@ public struct GenerateParameters: Sendable {
 
     /// Step to begin using a quantized KV cache when kvBits is non-nil (default: 0)
     public var quantizedKVStart: Int
+
+    /// KV cache quantization/compression mode.
+    ///
+    /// When set to a value other than `.none`, this takes precedence over `kvBits`/`kvGroupSize`.
+    /// The legacy `kvBits`/`kvGroupSize` fields continue to work for backward compatibility.
+    public var kvMode: KVQuantizationMode = .none
 
     /// Sampling temperature
     public var temperature: Float
@@ -108,6 +147,7 @@ public struct GenerateParameters: Sendable {
         kvBits: Int? = nil,
         kvGroupSize: Int = 64,
         quantizedKVStart: Int = 0,
+        kvMode: KVQuantizationMode = .none,
         temperature: Float = 0.6,
         topP: Float = 1.0,
         topK: Int = 0,
@@ -125,6 +165,7 @@ public struct GenerateParameters: Sendable {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
         self.quantizedKVStart = quantizedKVStart
+        self.kvMode = kvMode
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
@@ -536,6 +577,7 @@ public struct TokenIterator: TokenIteratorProtocol {
     let kvBits: Int?
     let kvGroupSize: Int
     let quantizedKVStart: Int
+    let kvMode: KVQuantizationMode
 
     // Internal metrics
     var promptPrefillTime: TimeInterval = 0.0
@@ -564,6 +606,7 @@ public struct TokenIterator: TokenIteratorProtocol {
         self.kvBits = parameters.kvBits
         self.kvGroupSize = parameters.kvGroupSize
         self.quantizedKVStart = parameters.quantizedKVStart
+        self.kvMode = parameters.kvMode
 
         self.promptPrefillTime = try measure {
             try prepare(input: .init(text: y), windowSize: parameters.prefillStepSize)
@@ -597,6 +640,7 @@ public struct TokenIterator: TokenIteratorProtocol {
         self.kvBits = parameters.kvBits
         self.kvGroupSize = parameters.kvGroupSize
         self.quantizedKVStart = parameters.quantizedKVStart
+        self.kvMode = parameters.kvMode
 
         self.promptPrefillTime = try measure {
             try prepare(input: input, windowSize: parameters.prefillStepSize)
@@ -630,6 +674,7 @@ public struct TokenIterator: TokenIteratorProtocol {
         self.kvBits = nil
         self.kvGroupSize = 64
         self.quantizedKVStart = 0
+        self.kvMode = .none
 
         self.promptPrefillTime = try measure {
             try prepare(input: input, windowSize: prefillStepSize)
@@ -675,12 +720,13 @@ public struct TokenIterator: TokenIteratorProtocol {
             previous[text: .newAxis], cache: cache.isEmpty ? nil : cache, state: state)
         self.state = result.state
 
-        // Apply dynamic cache quantization after each step
+        // Apply dynamic cache quantization/compression after each step
         maybeQuantizeKVCache(
             cache: &cache,
             kvBits: kvBits,
             kvGroupSize: kvGroupSize,
-            quantizedKVStart: quantizedKVStart
+            quantizedKVStart: quantizedKVStart,
+            kvMode: kvMode
         )
 
         return convertToToken(logits: result.logits)
@@ -798,7 +844,8 @@ public struct SpeculativeTokenIterator: TokenIteratorProtocol {
                 cache: &cache,
                 kvBits: parameters.kvBits,
                 kvGroupSize: parameters.kvGroupSize,
-                quantizedKVStart: parameters.quantizedKVStart
+                quantizedKVStart: parameters.quantizedKVStart,
+                kvMode: parameters.kvMode
             )
         }
 

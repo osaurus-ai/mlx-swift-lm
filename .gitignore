@@ -98,10 +98,6 @@ iOSInjectionProject/
 # Local development — never commit to public repo
 .claude/
 TestRunner/
-MODEL-COMPAT-AUDIT.md
-FULL-AUDIT.md
 *.local.md
-
-
-# Internal audit docs
 *-AUDIT.md
+*-PLAN.md

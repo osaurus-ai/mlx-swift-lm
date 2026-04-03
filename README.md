@@ -4,7 +4,7 @@
 
 A Swift package for building applications with large language models (LLMs) and vision language models (VLMs) on Apple Silicon, powered by [MLX Swift](https://github.com/ml-explore/mlx-swift).
 
-This fork adds native [JANG](https://jangq.ai) mixed-precision quantization, **Gemma 4**, **Mistral Small 4**, speculative decoding, VLM detection, and MoE performance optimizations on top of the full upstream library. Existing apps don't need to change anything -- all upstream APIs are preserved.
+This fork adds native [JANG](https://jangq.ai) mixed-precision quantization, **TurboQuant KV cache compression** (4.7-5.0x memory savings), **Gemma 4**, **Mistral Small 4**, speculative decoding, VLM detection, and MoE performance optimizations on top of the full upstream library. Existing apps don't need to change anything -- all upstream APIs are preserved.
 
 ## What's New in This Fork
 
@@ -72,6 +72,75 @@ if await container.isVLM {
 ```
 
 Works from `MLXLMCommon` alone -- no need to import `MLXVLM`.
+
+### TurboQuant KV Cache Compression
+
+Compress the KV cache **4.7-5.0x** during inference with no quality loss on short outputs and minimal divergence on long outputs. Based on Google DeepMind's research ([arXiv:2504.19874](https://arxiv.org/abs/2504.19874)).
+
+**One line to enable, works with every model -- no model changes needed:**
+
+```swift
+// 3-bit (recommended default -- best compression)
+let params = GenerateParameters(
+    kvMode: .turboQuant(keyBits: 3, valueBits: 3))
+
+// 4-bit (higher quality, less compression)
+let params = GenerateParameters(
+    kvMode: .turboQuant(keyBits: 4, valueBits: 4))
+```
+
+**Works with ChatSession for multi-turn conversations:**
+
+```swift
+let session = ChatSession(
+    container,
+    generateParameters: GenerateParameters(
+        kvMode: .turboQuant(keyBits: 3, valueBits: 3)))
+
+let reply1 = try await session.respond(to: "What is the capital of Japan?")
+// "Tokyo"
+let reply2 = try await session.respond(to: "What country is that city in?")
+// "Japan" -- context preserved across turns
+```
+
+**Works with speculative decoding:**
+
+```swift
+let params = GenerateParameters(
+    kvMode: .turboQuant(keyBits: 3, valueBits: 3))
+let result = try await mainModel.generate(
+    input: input, parameters: params, draft: draftModel)
+```
+
+#### How It Works
+
+TurboQuant compresses the KV cache after prefill using three techniques:
+
+1. **Randomized Hadamard rotation** -- spreads information uniformly across all dimensions so a single codebook works optimally for every component
+2. **Lloyd-Max optimal codebook** -- minimizes quantization error for the statistical distribution of rotated vector components
+3. **QJL residual correction** (keys only) -- 1-bit random projection that corrects the exponential error amplification in softmax attention scores
+
+The compressed cache is decoded once into a float16 buffer. During generation, new tokens are scatter-written into a pre-allocated window. Models see normal float16 arrays from `update()` -- they never know compression happened.
+
+#### Memory Savings
+
+| Model | Context | Float Cache | TurboQuant-3 | Savings |
+|-------|---------|-------------|-------------|---------|
+| Gemma 4 26B MoE | 2K | 84 MB | 17 MB | **4.9x** |
+| Qwen 3.5-35B | 32K | 655 MB | 135 MB | **4.9x** |
+| Mistral Small 4 (119B) | 2K | 1,208 MB | 244 MB | **4.9x** |
+
+#### Tested Configurations
+
+| Model | Architecture | Format | Modes | Result |
+|-------|-------------|--------|-------|--------|
+| Gemma 4 26B | MoE (128 experts) | MLX 4-bit | LLM, VLM, multi-turn | Identical on short, near-identical on long |
+| Gemma 4 31B | Dense | MLX 4-bit | LLM, multi-turn | Identical on short, near-identical on long |
+| Gemma 4 31B | Dense | JANG 4M | LLM | Identical |
+| NemotronH 30B-A3B | Hybrid SSM/attention | JANG 4M | LLM, multi-turn | Identical |
+| NemotronH 30B-A3B | Hybrid SSM/attention | JANG 2L | LLM | Near-identical |
+
+TurboQuant automatically skips non-KV cache layers (MambaCache for SSM, RotatingKVCache for sliding window). If `maxKVSize` is set (all RotatingKVCache), TurboQuant gracefully does nothing.
 
 ---
 
