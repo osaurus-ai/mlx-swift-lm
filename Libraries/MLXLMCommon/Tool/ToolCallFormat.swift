@@ -151,8 +151,13 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
         if type.hasPrefix("gemma4") {
             return .gemma4
         }
-        if type == "gemma" {
+        if type.hasPrefix("gemma3") || type == "gemma" {
             return .gemma
+        }
+
+        // MiniMax family (minimax, minimax_m2)
+        if type.hasPrefix("minimax") {
+            return .minimaxM2
         }
 
         // Nemotron family (nemotron_h, etc.)
