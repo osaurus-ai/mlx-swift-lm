@@ -46,6 +46,7 @@ public enum LLMTypeRegistry {
 
     private static func extendedModels() -> [String: (Data) throws -> any LanguageModel] {
         [
+            "mistral4": create(Mistral4Configuration.self, Mistral4Model.init),
             "minicpm": create(MiniCPMConfiguration.self, MiniCPMModel.init),
             "starcoder2": create(Starcoder2Configuration.self, Starcoder2Model.init),
             "cohere": create(CohereConfiguration.self, CohereModel.init),
@@ -85,7 +86,25 @@ public enum LLMTypeRegistry {
             "nemotron_h": create(NemotronHConfiguration.self, NemotronHModel.init),
             "afmoe": create(AfMoEConfiguration.self, AfMoEModel.init),
             "jamba_3b": create(JambaConfiguration.self, JambaModel.init),
-            "mistral3": create(Mistral3TextConfiguration.self, Mistral3TextModel.init),
+            "mistral3": { data in
+                // Mistral3 VLM may wrap Mistral4 text decoder — check text_config.model_type
+                struct TextConfigCheck: Codable {
+                    let textConfig: TextModelType?
+                    struct TextModelType: Codable {
+                        let modelType: String?
+                        enum CodingKeys: String, CodingKey { case modelType = "model_type" }
+                    }
+                    enum CodingKeys: String, CodingKey { case textConfig = "text_config" }
+                }
+                if let check = try? JSONDecoder.json5().decode(TextConfigCheck.self, from: data),
+                    check.textConfig?.modelType == "mistral4"
+                {
+                    let config = try JSONDecoder.json5().decode(Mistral4Configuration.self, from: data)
+                    return Mistral4Model(config)
+                }
+                let config = try JSONDecoder.json5().decode(Mistral3TextConfiguration.self, from: data)
+                return Mistral3TextModel(config)
+            },
             "apertus": create(ApertusConfiguration.self, ApertusModel.init),
         ]
     }
@@ -537,13 +556,43 @@ public final class LLMModelFactory: ModelFactory {
                 configurationURL.lastPathComponent, configuration.name, error)
         }
 
+        // Determine effective model type for the LLM factory.
+        // VLM configs may wrap a different text decoder (e.g., mistral3 VLM wraps mistral4 text).
+        // If text_config.model_type exists and differs from the top-level, prefer it when
+        // it's a registered type — it means the text decoder is a different architecture.
+        struct TextConfigModelType: Codable {
+            let modelType: String?
+            enum CodingKeys: String, CodingKey { case modelType = "model_type" }
+        }
+        struct TextConfigWrapper: Codable {
+            let textConfig: TextConfigModelType?
+            enum CodingKeys: String, CodingKey { case textConfig = "text_config" }
+        }
         let model: LanguageModel
         do {
             model = try await typeRegistry.createModel(
                 configuration: configData, modelType: baseConfig.modelType)
-        } catch let error as DecodingError {
-            throw ModelFactoryError.configurationDecodingError(
-                configurationURL.lastPathComponent, configuration.name, error)
+        } catch {
+            // Top-level model_type failed (e.g. "mistral3" is a VLM type not in LLM registry,
+            // or the config couldn't be decoded for that type).
+            // Try text_config.model_type as fallback (e.g. "mistral4" text decoder).
+            if let wrapper = try? JSONDecoder.json5().decode(TextConfigWrapper.self, from: configData),
+                let textModelType = wrapper.textConfig?.modelType,
+                textModelType != baseConfig.modelType
+            {
+                do {
+                    model = try await typeRegistry.createModel(
+                        configuration: configData, modelType: textModelType)
+                } catch let innerError as DecodingError {
+                    throw ModelFactoryError.configurationDecodingError(
+                        configurationURL.lastPathComponent, configuration.name, innerError)
+                }
+            } else if let decodingError = error as? DecodingError {
+                throw ModelFactoryError.configurationDecodingError(
+                    configurationURL.lastPathComponent, configuration.name, decodingError)
+            } else {
+                throw error
+            }
         }
 
         // Load EOS token IDs from config.json, with optional override from generation_config.json
