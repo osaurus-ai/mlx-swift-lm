@@ -5,12 +5,24 @@ import Foundation
 /// Parser for Gemma format: call:name{key:value,k:<escape>str<escape>}
 /// Reference: https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/tool_parsers/function_gemma.py
 public struct GemmaFunctionParser: ToolCallParser, Sendable {
-    public let startTag: String? = "<start_function_call>"
-    public let endTag: String? = "<end_function_call>"
+    public let startTag: String?
+    public let endTag: String?
 
-    private let escapeMarker = "<escape>"
+    private let escapeMarker: String
 
-    public init() {}
+    /// Initialize with Gemma 3 tags (default)
+    public init() {
+        self.startTag = "<start_function_call>"
+        self.endTag = "<end_function_call>"
+        self.escapeMarker = "<escape>"
+    }
+
+    /// Initialize with custom tags (for Gemma 4 which uses `<|tool_call>` / `<tool_call|>`)
+    public init(startTag: String, endTag: String, escapeMarker: String = "<|\"\\|>") {
+        self.startTag = startTag
+        self.endTag = endTag
+        self.escapeMarker = escapeMarker
+    }
 
     public func parse(content: String, tools: [[String: any Sendable]]?) -> ToolCall? {
         // Strip tags if present
