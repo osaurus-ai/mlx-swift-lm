@@ -115,7 +115,7 @@ public struct Mistral3VLMConfiguration: Codable, Sendable {
 
 /// Extract sliding local blocks from a batched input tensor.
 /// Equivalent to PyTorch's nn.functional.unfold / im2col operation.
-private func unfold(
+func unfold(
     _ input: MLXArray,
     kernelSize: Int,
     dilation: Int = 1,
@@ -172,7 +172,7 @@ private func unfold(
 
 // MARK: - Mistral3 Patch Merger
 
-private class Mistral3PatchMerger: Module {
+class Mistral3PatchMerger: Module {
     let spatialMergeSize: Int
     let patchSize: Int
 
@@ -243,7 +243,7 @@ private class Mistral3PatchMerger: Module {
 
 // MARK: - Mistral3 MultiModal Projector
 
-private class Mistral3MultiModalProjector: Module {
+class Mistral3MultiModalProjector: Module {
     @ModuleInfo var norm: RMSNorm
     @ModuleInfo(key: "patch_merger") var patchMerger: Mistral3PatchMerger
     @ModuleInfo(key: "linear_1") var linear1: Linear

@@ -39,6 +39,7 @@ public struct Mistral4Configuration: Codable, Sendable {
     let normTopkProb: Bool
     let tieWordEmbeddings: Bool
     let headDim: Int
+    let ropeInterleave: Bool
     let firstKDenseReplace: Int
     let moeLayerFreq: Int
 
@@ -71,6 +72,7 @@ public struct Mistral4Configuration: Codable, Sendable {
         case normTopkProb = "norm_topk_prob"
         case tieWordEmbeddings = "tie_word_embeddings"
         case headDim = "head_dim"
+        case ropeInterleave = "rope_interleave"
         case firstKDenseReplace = "first_k_dense_replace"
         case moeLayerFreq = "moe_layer_freq"
     }
@@ -109,6 +111,7 @@ public struct Mistral4Configuration: Codable, Sendable {
         normTopkProb = try c.decodeIfPresent(Bool.self, forKey: .normTopkProb) ?? true
         tieWordEmbeddings = try c.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings) ?? false
         headDim = try c.decodeIfPresent(Int.self, forKey: .headDim) ?? 128
+        ropeInterleave = try c.decodeIfPresent(Bool.self, forKey: .ropeInterleave) ?? false
         firstKDenseReplace = try c.decodeIfPresent(Int.self, forKey: .firstKDenseReplace) ?? 0
         moeLayerFreq = try c.decodeIfPresent(Int.self, forKey: .moeLayerFreq) ?? 1
 
@@ -189,9 +192,9 @@ class Mistral4Attention: Module {
 
         self._oProj.wrappedValue = Linear(numHeads * vHeadDim, config.hiddenSize, bias: config.attentionBias)
 
-        // Yarn RoPE
+        // Yarn RoPE — rope_interleave=true in config maps to traditional=true in MLX
         self.rope = initializeRope(
-            dims: qkRopeHeadDim, base: config.ropeTheta, traditional: false,
+            dims: qkRopeHeadDim, base: config.ropeTheta, traditional: config.ropeInterleave,
             scalingConfig: config.ropeScaling, maxPositionEmbeddings: config.maxPositionEmbeddings)
 
         super.init()
