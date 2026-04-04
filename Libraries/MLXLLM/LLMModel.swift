@@ -24,12 +24,15 @@ extension LLMModel {
         let prefillStepSize = windowSize ?? 512
         var y = input.text
 
-        // Prepare the prompt in chunks if larger than the prefill size
+        // Prepare the prompt in chunks if larger than the prefill size.
+        // Clear Metal cache between chunks to reduce memory pressure,
+        // matching Python mlx-lm behavior. Critical for MoE models.
         while y.tokens.size > prefillStepSize {
             let input = y[.newAxis, ..<prefillStepSize]
             _ = self(input, cache: cache.isEmpty ? nil : cache, state: nil)
-            eval(cache)
+            MLX.eval(cache)
             y = y[prefillStepSize...]
+            Memory.clearCache()
         }
 
         return .tokens(y)
