@@ -580,12 +580,6 @@ public struct TokenIterator: TokenIteratorProtocol {
     let quantizedKVStart: Int
     let kvMode: KVQuantizationMode
 
-    /// Dedicated generation stream for model forward passes.
-    /// Matches Python's `generation_stream = mx.new_stream(mx.default_device())`.
-    /// Model forward runs on this stream; item() reads on the default stream,
-    /// enabling GPU/CPU pipeline overlap.
-    let generationStream: MLX.Stream
-
     /// Pre-computed cache state array references. Built once after prepare(),
     /// reused every token to avoid per-token Swift array allocations.
     /// Cache objects mutate in-place so references stay valid.
@@ -619,7 +613,7 @@ public struct TokenIterator: TokenIteratorProtocol {
         self.kvGroupSize = parameters.kvGroupSize
         self.quantizedKVStart = parameters.quantizedKVStart
         self.kvMode = parameters.kvMode
-        self.generationStream = MLX.Stream(Device.defaultDevice())
+
 
         self.promptPrefillTime = try measure {
             try prepare(input: .init(text: y), windowSize: parameters.prefillStepSize)
@@ -654,7 +648,7 @@ public struct TokenIterator: TokenIteratorProtocol {
         self.kvGroupSize = parameters.kvGroupSize
         self.quantizedKVStart = parameters.quantizedKVStart
         self.kvMode = parameters.kvMode
-        self.generationStream = MLX.Stream(Device.defaultDevice())
+
 
         self.promptPrefillTime = try measure {
             try prepare(input: input, windowSize: parameters.prefillStepSize)
@@ -689,7 +683,7 @@ public struct TokenIterator: TokenIteratorProtocol {
         self.kvGroupSize = 64
         self.quantizedKVStart = 0
         self.kvMode = .none
-        self.generationStream = MLX.Stream(Device.defaultDevice())
+
 
         self.promptPrefillTime = try measure {
             try prepare(input: input, windowSize: prefillStepSize)
@@ -699,10 +693,6 @@ public struct TokenIterator: TokenIteratorProtocol {
     mutating func prepare(input: LMInput, windowSize: Int? = nil) throws {
         processor?.prompt(input.text.tokens)
 
-        // Run prefill on generation stream — matches Python's
-        // `with mx.stream(generation_stream): y = _step(prompt)`
-        MLX.Stream.setDefault(generationStream)
-
         switch try model.prepare(input, cache: cache, windowSize: windowSize) {
         case .tokens(let tokens):
             y = tokens
@@ -710,14 +700,10 @@ public struct TokenIterator: TokenIteratorProtocol {
             // evaluate the remainder of the prompt -- this primes the pump
             let token = step(previous: y)
             y = .init(tokens: token)
-
-            MLX.Stream.restoreDefault()
             asyncEval(y.tokens)
 
         case .logits(let result):
             y = .init(tokens: convertToToken(logits: result.logits))
-
-            MLX.Stream.restoreDefault()
             asyncEval(y.tokens)
         }
 
@@ -768,16 +754,10 @@ public struct TokenIterator: TokenIteratorProtocol {
 
         let previousY = y
 
-        // Model forward on generation stream — matches Python's
-        // `with mx.stream(generation_stream): logits = model(...)`
-        MLX.Stream.setDefault(generationStream)
         let token = step(previous: previousY)
         y = .init(tokens: token)
 
-        // Restore default stream before asyncEval — matches Python's
-        // `mx.async_eval(next_y)` being called outside gen stream context.
         // Submit token + all cache states together so GPU pipeline stays full.
-        MLX.Stream.restoreDefault()
         asyncEval([token] + cacheStateArrays)
 
         tokenCount += 1
@@ -786,8 +766,6 @@ public struct TokenIterator: TokenIteratorProtocol {
             Memory.clearCache()
         }
 
-        // Read previous token on default stream — matches Python's
-        // `yield y.item()`. GPU processes N+1 on gen stream while CPU reads N.
         return previousY.tokens.item(Int.self)
     }
 }
