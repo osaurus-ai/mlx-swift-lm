@@ -586,6 +586,11 @@ public struct TokenIterator: TokenIteratorProtocol {
     /// enabling GPU/CPU pipeline overlap.
     let generationStream: MLX.Stream
 
+    /// Pre-computed cache state array references. Built once after prepare(),
+    /// reused every token to avoid per-token Swift array allocations.
+    /// Cache objects mutate in-place so references stay valid.
+    var cacheStateArrays: [MLXArray] = []
+
     // Internal metrics
     var promptPrefillTime: TimeInterval = 0.0
 
@@ -715,6 +720,10 @@ public struct TokenIterator: TokenIteratorProtocol {
             MLX.Stream.restoreDefault()
             asyncEval(y.tokens)
         }
+
+        // Build cache state references once after prefill.
+        // Cache objects mutate in-place so these refs stay valid.
+        cacheStateArrays = cache.flatMap { $0.innerState() }
     }
 
     mutating func convertToToken(logits: MLXArray) -> MLXArray {
@@ -766,9 +775,10 @@ public struct TokenIterator: TokenIteratorProtocol {
         y = .init(tokens: token)
 
         // Restore default stream before asyncEval — matches Python's
-        // `mx.async_eval(next_y)` being called outside gen stream context
+        // `mx.async_eval(next_y)` being called outside gen stream context.
+        // Submit token + all cache states together so GPU pipeline stays full.
         MLX.Stream.restoreDefault()
-        asyncEval(token)
+        asyncEval([token] + cacheStateArrays)
 
         tokenCount += 1
 
