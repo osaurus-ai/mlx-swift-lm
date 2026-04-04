@@ -23,6 +23,9 @@ public func loadWeights(
     var weights = [String: MLXArray]()
     var metadata = [String: String]()
 
+    // Resolve symlinks (mlxstudio uses symlinked model directories)
+    let modelDirectory = modelDirectory.resolvingSymlinksInPath()
+
     // JANG v1 models use .jang.safetensors files that need uint8->uint32 repacking
     if let jangConfig, !jangConfig.isV2, JangLoader.hasV1Weights(at: modelDirectory) {
         weights = try JangLoader.loadV1Weights(at: modelDirectory)
