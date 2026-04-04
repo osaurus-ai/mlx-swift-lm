@@ -15,6 +15,12 @@ import MLX
 import MLXLMCommon
 import MLXNN
 
+// Compiled logit softcap — fuses divide + tanh + multiply into one Metal dispatch.
+private let compiledLogitSoftcap: @Sendable (MLXArray, MLXArray) -> MLXArray =
+    compile(shapeless: true) { (x: MLXArray, cap: MLXArray) -> MLXArray in
+        tanh(x / cap) * cap
+    }
+
 // MARK: - Shared Norm Utilities
 
 /// Standard Gemma4 RMSNorm — weight used directly, NO +1 offset
@@ -526,8 +532,8 @@ private class TextRouter: Module {
     }
     func callAsFunction(_ x: MLXArray) -> (MLXArray, MLXArray) {
         var h = rmsNormNoScale(x, eps: eps) * rs * sc
-        let s = proj(h); let p = softmax(s.asType(.float32), axis: -1)
-        let ti = argPartition(MLXArray(0) - s.asType(.float32), kth: topK - 1, axis: -1)[.ellipsis, ..<topK]
+        let s = proj(h); let p = softmax(s, axis: -1)
+        let ti = argPartition(MLXArray(0) - s, kth: topK - 1, axis: -1)[.ellipsis, ..<topK]
         var tw = takeAlong(p, ti, axis: -1); tw = tw / tw.sum(axis: -1, keepDims: true); tw = tw * pes[ti]
         return (ti, tw)
     }
@@ -580,7 +586,7 @@ private class TextLayer: Module {
             let (ti, tw) = router(h); var h2 = experts(pfLN2(h), idx: ti, wts: tw); h2 = pffLN2(h2)
             h = h1 + h2
         } else { h = mlp(pfLN(h)) }
-        h = pffLN(h); h = r + h; h = h * ls.asType(h.dtype); return h
+        h = pffLN(h); h = r + h; h = h * ls; return h
     }
 }
 
@@ -620,7 +626,7 @@ private class G4LanguageModel: Module {
     func callAsFunction(_ inputs: MLXArray?, inputEmbedding: MLXArray? = nil, cache: [KVCache?]? = nil) -> MLXArray {
         var o = model(inputs, inputEmbedding: inputEmbedding, cache: cache)
         if let lh = lmHead { o = lh(o) } else { o = model.emb.asLinear(o) }
-        if let cap = cfg.finalLogitSoftcapping, cap > 0 { o = tanh(o / cap) * cap }
+        if let cap = cfg.finalLogitSoftcapping, cap > 0 { o = compiledLogitSoftcap(o, MLXArray(cap)) }
         return o
     }
     func newCache(parameters: GenerateParameters?) -> [any KVCache] {

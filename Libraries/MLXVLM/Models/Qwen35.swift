@@ -12,6 +12,19 @@ import MLX
 import MLXLMCommon
 import MLXNN
 
+/// Compiled sigmoid multiply: fuses x * sigmoid(gate) into one Metal dispatch.
+/// Used in GatedDeltaNet output projection (per-layer, ~30 layers per forward).
+private let compiledSigmoidMultiply: @Sendable (MLXArray, MLXArray) -> MLXArray =
+    compile(shapeless: true) { (x: MLXArray, gate: MLXArray) -> MLXArray in
+        x * sigmoid(gate)
+    }
+
+/// Compiled shared expert gate: sigmoid(gate_output) * expert_output → 1 fused op.
+private let compiledSigmoidGate: @Sendable (MLXArray, MLXArray) -> MLXArray =
+    compile(shapeless: true) { (gateOutput: MLXArray, expertOutput: MLXArray) -> MLXArray in
+        sigmoid(gateOutput) * expertOutput
+    }
+
 private enum Qwen35VLError: Error {
     case featureTokenMismatch(expected: Int, actual: Int)
 }
@@ -550,7 +563,7 @@ enum Qwen35Language {
             .transposed(0, 2, 1, 3)
             .reshaped(B, L, -1)
 
-            return oProj(output * sigmoid(gate))
+            return oProj(compiledSigmoidMultiply(output, gate))
         }
     }
 
@@ -672,13 +685,12 @@ enum Qwen35Language {
             let v = split[2].reshaped(B, S, numVHeads, headVDim)
 
             var state = cache?[1]
-            let dtype = q.dtype
             let invScale = pow(Float(headKDim), -0.5)
             let qNormed =
-                MLXArray(pow(invScale, 2)).asType(dtype)
+                MLXArray(pow(invScale, 2))
                 * MLXFast.rmsNorm(q, weight: MLXArray.mlxNone, eps: 1e-6)
             let kNormed =
-                MLXArray(invScale).asType(dtype)
+                MLXArray(invScale)
                 * MLXFast.rmsNorm(k, weight: MLXArray.mlxNone, eps: 1e-6)
 
             var out: MLXArray
@@ -748,10 +760,10 @@ enum Qwen35Language {
             let y = switchMLP(x, inds)
             let combined = (y * scores[.ellipsis, .newAxis]).sum(axis: -2)
 
-            var sharedY = sharedExpert(x)
-            sharedY = sigmoid(sharedExpertGate(x)) * sharedY
+            let sharedY = sharedExpert(x)
+            let gatedSharedY = compiledSigmoidGate(sharedExpertGate(x), sharedY)
 
-            return combined + sharedY
+            return combined + gatedSharedY
         }
     }
 
