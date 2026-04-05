@@ -177,16 +177,11 @@ func gatedDeltaKernel(
 
 // MARK: - Ops Fallback
 
-private func gatedDeltaStepOps(
-    q: MLXArray,
-    k: MLXArray,
-    v: MLXArray,
-    g: MLXArray,
-    beta: MLXArray,
-    state: MLXArray,
-    mask: MLXArray? = nil
+/// Raw step implementation — called by compiled wrapper or directly for masked prefill.
+private func _rawStepOps(
+    q: MLXArray, k: MLXArray, v: MLXArray,
+    g: MLXArray, beta: MLXArray, state: MLXArray
 ) -> (MLXArray, MLXArray) {
-    let oldState = state
     let decay: MLXArray
     if g.ndim == 2 {
         decay = expandedDimensions(g, axes: [2, 3])
@@ -201,8 +196,33 @@ private func gatedDeltaStepOps(
     let delta = (v - kvMem) * expandedDimensions(beta, axis: -1)
     state = state + expandedDimensions(k, axis: -2) * expandedDimensions(delta, axis: -1)
     let y = (state * expandedDimensions(q, axis: -2)).sum(axis: -1)
+    return (y, state)
+}
 
+/// Compiled GatedDelta step — fuses ~10 ops (decay, kv_mem, delta, state update, output)
+/// into one Metal dispatch. Matches Python's @mx.compile _gated_delta_step_ops.
+/// Called per SSM layer per token (~30 layers). Without compile: 300 extra kernel launches/token.
+private let _compiledStepOps: @Sendable ([MLXArray]) -> [MLXArray] =
+    compile { (args: [MLXArray]) -> [MLXArray] in
+        let (y, state) = _rawStepOps(
+            q: args[0], k: args[1], v: args[2],
+            g: args[3], beta: args[4], state: args[5])
+        return [y, state]
+    }
+
+private func gatedDeltaStepOps(
+    q: MLXArray,
+    k: MLXArray,
+    v: MLXArray,
+    g: MLXArray,
+    beta: MLXArray,
+    state: MLXArray,
+    mask: MLXArray? = nil
+) -> (MLXArray, MLXArray) {
     if let mask {
+        // Masked path (prefill) — can't compile due to conditional where
+        let oldState = state
+        let (y, newState) = _rawStepOps(q: q, k: k, v: v, g: g, beta: beta, state: state)
         let expandedMask: MLXArray
         if mask.ndim == 1 {
             expandedMask = expandedDimensions(mask, axes: [1, 2, 3])
@@ -213,10 +233,12 @@ private func gatedDeltaStepOps(
         } else {
             fatalError("Unsupported mask shape \(mask.shape)")
         }
-        state = MLX.where(expandedMask, state, oldState)
+        return (y, MLX.where(expandedMask, newState, oldState))
     }
 
-    return (y, state)
+    // Decode path — compiled, fuses ~10 ops into 1 Metal dispatch
+    let result = _compiledStepOps([q, k, v, g, beta, state])
+    return (result[0], result[1])
 }
 
 func gatedDeltaOps(

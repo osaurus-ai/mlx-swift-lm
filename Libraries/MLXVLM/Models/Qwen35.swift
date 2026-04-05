@@ -31,23 +31,24 @@ private enum Qwen35VLError: Error {
 
 // MARK: - Gated Delta Helpers
 
+/// Compiled compute_g — fuses exp+softplus+mul into 1 Metal dispatch.
+private let _vlmCompiledComputeG: @Sendable (MLXArray, MLXArray, MLXArray) -> MLXArray =
+    compile(shapeless: true) { (aLog: MLXArray, a: MLXArray, dtBias: MLXArray) -> MLXArray in
+        let decay = exp(-exp(aLog.asType(.float32)) * softplus(a + dtBias))
+        return decay.asType(a.dtype)
+    }
+
 private func computeGatedDeltaG(_ aLog: MLXArray, _ a: MLXArray, _ dtBias: MLXArray)
     -> MLXArray
 {
-    let decay = exp(-exp(aLog.asType(.float32)) * softplus(a + dtBias))
-    return decay.asType(a.dtype)
+    _vlmCompiledComputeG(aLog, a, dtBias)
 }
 
-private func gatedDeltaStepOps(
-    q: MLXArray,
-    k: MLXArray,
-    v: MLXArray,
-    g: MLXArray,
-    beta: MLXArray,
-    state: MLXArray,
-    mask: MLXArray? = nil
+/// Raw step — called by compiled wrapper or directly for masked prefill.
+private func _vlmRawStepOps(
+    q: MLXArray, k: MLXArray, v: MLXArray,
+    g: MLXArray, beta: MLXArray, state: MLXArray
 ) -> (MLXArray, MLXArray) {
-    let oldState = state
     let decay: MLXArray
     if g.ndim == 2 {
         decay = expandedDimensions(g, axes: [2, 3])
@@ -62,8 +63,30 @@ private func gatedDeltaStepOps(
     let delta = (v - kvMem) * expandedDimensions(beta, axis: -1)
     state = state + expandedDimensions(k, axis: -2) * expandedDimensions(delta, axis: -1)
     let y = (state * expandedDimensions(q, axis: -2)).sum(axis: -1)
+    return (y, state)
+}
 
+/// Compiled GatedDelta step — fuses ~10 ops into 1 Metal dispatch.
+private let _vlmCompiledStepOps: @Sendable ([MLXArray]) -> [MLXArray] =
+    compile { (args: [MLXArray]) -> [MLXArray] in
+        let (y, state) = _vlmRawStepOps(
+            q: args[0], k: args[1], v: args[2],
+            g: args[3], beta: args[4], state: args[5])
+        return [y, state]
+    }
+
+private func gatedDeltaStepOps(
+    q: MLXArray,
+    k: MLXArray,
+    v: MLXArray,
+    g: MLXArray,
+    beta: MLXArray,
+    state: MLXArray,
+    mask: MLXArray? = nil
+) -> (MLXArray, MLXArray) {
     if let mask {
+        let oldState = state
+        let (y, newState) = _vlmRawStepOps(q: q, k: k, v: v, g: g, beta: beta, state: state)
         let expandedMask: MLXArray
         if mask.ndim == 1 {
             expandedMask = expandedDimensions(mask, axes: [1, 2, 3])
@@ -74,10 +97,11 @@ private func gatedDeltaStepOps(
         } else {
             fatalError("Unsupported mask shape \(mask.shape)")
         }
-        state = MLX.where(expandedMask, state, oldState)
+        return (y, MLX.where(expandedMask, newState, oldState))
     }
 
-    return (y, state)
+    let result = _vlmCompiledStepOps([q, k, v, g, beta, state])
+    return (result[0], result[1])
 }
 
 private func gatedDeltaOps(
