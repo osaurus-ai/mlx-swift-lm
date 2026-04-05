@@ -704,16 +704,17 @@ public struct TokenIterator: TokenIteratorProtocol {
     }
 
     mutating func convertToToken(logits: MLXArray) -> MLXArray {
-        // process the logits (one hot array of possible tokens)
         var logits = logits[0..., -1, 0...]
-        logits = processor?.process(logits: logits) ?? logits
 
-        // transform logits back to a token
-        let y = sampler.sample(logits: logits)
+        if var processor {
+            logits = processor.process(logits: logits)
+            let y = sampler.sample(logits: logits)
+            processor.didSample(token: y)
+            self.processor = processor
+            return y
+        }
 
-        processor?.didSample(token: y)
-
-        return y
+        return sampler.sample(logits: logits)
     }
 
     // Whether cache quantization is needed (skip the function call entirely when not)
