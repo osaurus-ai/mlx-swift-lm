@@ -796,6 +796,9 @@ public class Gemma3nLanguageModel: Module {
         cache: [KVCache?]? = nil,
         perLayerInputs: MLXArray? = nil
     ) -> MLXArray {
+        // Ensure batch dimension — callers may pass 1D tokens [N] on cache-reuse turns
+        let inputs = inputs.map { $0.ndim == 1 ? $0.expandedDimensions(axis: 0) : $0 }
+        let inputsEmbeds = inputsEmbeds.map { $0.ndim == 2 ? $0.expandedDimensions(axis: 0) : $0 }
         var h: MLXArray
         if let inputsEmbeds {
             h = inputsEmbeds
