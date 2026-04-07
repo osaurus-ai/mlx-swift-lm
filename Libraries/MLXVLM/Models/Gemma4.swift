@@ -699,8 +699,14 @@ private class TextModel: Module {
     }
 
     func callAsFunction(_ inputs: MLXArray?, inputEmbedding: MLXArray? = nil, cache: [KVCache?]? = nil) -> MLXArray {
+        // Ensure batch dimension — callers may pass 1D tokens [N] on cache-reuse turns
+        let inputs = inputs.map { $0.ndim == 1 ? $0.expandedDimensions(axis: 0) : $0 }
         var h: MLXArray
-        if let ie = inputEmbedding { h = ie } else { h = emb(inputs!) * MLXArray(sqrt(Float(cfg.hiddenSize)), dtype: .bfloat16).asType(emb.weight.dtype) }
+        if let ie = inputEmbedding {
+            h = ie.ndim == 2 ? ie.expandedDimensions(axis: 0) : ie
+        } else {
+            h = emb(inputs!) * MLXArray(sqrt(Float(cfg.hiddenSize)), dtype: .bfloat16).asType(emb.weight.dtype)
+        }
 
         var pliList: [MLXArray?]
         if cfg.hiddenSizePerLayerInput > 0 {

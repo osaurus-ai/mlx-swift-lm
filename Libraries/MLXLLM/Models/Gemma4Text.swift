@@ -667,6 +667,8 @@ public class Gemma4Model: Module {
     func callAsFunction(
         _ inputs: MLXArray, cache: [KVCache?]? = nil
     ) -> MLXArray {
+        // Ensure batch dimension — callers may pass 1D tokens [N] on cache-reuse turns
+        let inputs = inputs.ndim == 1 ? inputs.expandedDimensions(axis: 0) : inputs
         var h = embedTokens(inputs)
         h = h * MLXArray(sqrt(Float(config.hiddenSize)), dtype: .bfloat16).asType(h.dtype)
 
