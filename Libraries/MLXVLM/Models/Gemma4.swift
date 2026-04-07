@@ -826,7 +826,25 @@ public class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
         emb = emb * MLXArray(sqrt(Float(config.textConfig.hiddenSize)), dtype: .bfloat16).asType(emb.dtype)
 
         if let pixels = input.image?.pixels {
-            let imgFeatures = embedVision(visionTower(pixels)).asType(emb.dtype)
+            // Process each image through vision tower separately — images may have
+            // different spatial dimensions after resize. Vision features are always
+            // [1, defaultOutputLength, visionHidden] per image regardless of input size.
+            let B = pixels.dim(0)
+            var featuresList = [MLXArray]()
+            for i in 0 ..< B {
+                // Extract image at its original dimensions (stored in frames)
+                // to avoid processing zero-padded regions through the vision tower.
+                if let frames = input.image?.frames, i < frames.count {
+                    let h = frames[i].h; let w = frames[i].w
+                    let singleImage = pixels[i, 0..., ..<h, ..<w].expandedDimensions(axis: 0)
+                    featuresList.append(embedVision(visionTower(singleImage)))
+                } else {
+                    let singleImage = pixels[i].expandedDimensions(axis: 0)
+                    featuresList.append(embedVision(visionTower(singleImage)))
+                }
+            }
+            let imgFeatures = (B == 1 ? featuresList[0] : concatenated(featuresList)).asType(emb.dtype)
+
             let imgMask = MLX.equal(input.text.tokens, MLXArray(Int32(config.imageTokenId)))
             let imgMaskExp = MLX.broadcast(expandedDimensions(imgMask, axis: -1), to: emb.shape)
             emb = maskedScatter(input: emb, mask: imgMaskExp, source: imgFeatures)
@@ -936,18 +954,22 @@ public struct Gemma4Processor: UserInputProcessor {
                 // asMLXArray returns [1, C, H, W] (NCHW) with float values in [0, 1]
                 return MediaProcessing.asMLXArray(resized)
             }
-            // Multi-image: pad all images to the same dimensions so they can be batched.
-            // Different images resize to different H/W based on aspect ratio.
-            if arrays.count > 1 {
+            // Store per-image dimensions in frames so prepare() can extract each
+            // image at its original size (before padding for batch storage).
+            let imageSizes = arrays.map { THW(1, $0.dim(2), $0.dim(3)) }
+            if arrays.count == 1 {
+                processedImage = LMInput.ProcessedImage(pixels: arrays[0], frames: imageSizes)
+            } else {
+                // Pad to max dims for storage in a single batched tensor
                 let maxH = arrays.map { $0.dim(2) }.max()!
                 let maxW = arrays.map { $0.dim(3) }.max()!
-                arrays = arrays.map { arr in
+                let stored = arrays.map { arr -> MLXArray in
                     let h = arr.dim(2); let w = arr.dim(3)
                     if h == maxH && w == maxW { return arr }
-                    return padded(arr, widths: [[0, 0], [0, 0], [0, maxH - h], [0, maxW - w]])
+                    return MLX.padded(arr, widths: [[0, 0], [0, 0], [0, maxH - h], [0, maxW - w]])
                 }
+                processedImage = LMInput.ProcessedImage(pixels: concatenated(stored), frames: imageSizes)
             }
-            processedImage = LMInput.ProcessedImage(pixels: concatenated(arrays))
             // Chat template emits <|image|> which tokenizes to image_token_id (258880).
             // Expand each single image token into imageSeqLength copies for the vision features.
             let imgId = tokenizer.encode(text: "<|image|>").last ?? 258880
