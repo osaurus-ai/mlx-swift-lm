@@ -98,6 +98,18 @@ public func loadWeights(
                 tup = quantization?.asTuple
             }
             guard let (gs, b, mode) = tup else { return nil }
+
+            // MXFP4/MXFP8: quantizeSingle creates QuantizedLinear with dummy biases
+            // from MLX.quantized(), but MX formats don't use biases. Create the module
+            // directly with nil biases to avoid "biases must be null" at inference time.
+            if (mode == .mxfp4 || mode == .mxfp8), m is Linear {
+                let linear = m as! Linear
+                let (qW, scales, _) = MLX.quantized(linear.weight, groupSize: gs, bits: b)
+                return (path, QuantizedLinear(
+                    weight: qW, bias: linear.bias, scales: scales, biases: nil,
+                    groupSize: gs, bits: b, mode: mode))
+            }
+
             if let q = quantizeSingle(layer: m, groupSize: gs, bits: b, mode: mode) {
                 return (path, q)
             }
@@ -115,8 +127,11 @@ public func loadWeights(
     }
 
     // apply the loaded weights
+    // Use .noUnusedKeys instead of .all — MXFP4/MXFP8 quantized layers don't have .biases
+    // in the weight files, but QuantizedLinear's optional .biases property gets initialized
+    // by the quantize step. Strict .all verification would fail on the missing keys.
     let parameters = ModuleParameters.unflattened(weights)
-    try model.update(parameters: parameters, verify: [.all])
+    try model.update(parameters: parameters, verify: [.noUnusedKeys])
 
     // MoE optimization: convert float16 weights to bfloat16 to prevent Metal's
     // automatic float16→float32 promotion on mixed-dtype operations.
