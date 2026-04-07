@@ -23,5 +23,9 @@ import MLXNN
 public func applyRotaryPosition<R: RoPELayer>(_ rope: R, to x: MLXArray, cache: KVCache?)
     -> MLXArray
 {
+    // Batched decode: use per-sequence [B]-shaped offsets for correct positional encoding.
+    if let batchCache = cache as? BatchKVCache {
+        return rope(x, offset: batchCache.offsetArray)
+    }
     return rope(x, offset: cache?.offset ?? 0)
 }
