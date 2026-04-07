@@ -925,7 +925,7 @@ public struct Gemma4Processor: UserInputProcessor {
         var processedImage: LMInput.ProcessedImage?
         if !input.images.isEmpty {
             let ps = config.patchSize; let maxP = config.maxSoftTokens * config.poolingKernelSize * config.poolingKernelSize
-            let arrays = try input.images.map { img -> MLXArray in
+            var arrays = try input.images.map { img -> MLXArray in
                 let ci = try img.asCIImage()
                 let (w, h) = (Int(ci.extent.width), Int(ci.extent.height))
                 let f = sqrt(Float(maxP * ps * ps) / Float(w * h))
@@ -934,8 +934,18 @@ public struct Gemma4Processor: UserInputProcessor {
                 if tH == 0 { tH = sm }; if tW == 0 { tW = sm }
                 let resized = MediaProcessing.resampleBicubic(ci, to: CGSize(width: tW, height: tH))
                 // asMLXArray returns [1, C, H, W] (NCHW) with float values in [0, 1]
-                // — no extra transpose or rescale needed
                 return MediaProcessing.asMLXArray(resized)
+            }
+            // Multi-image: pad all images to the same dimensions so they can be batched.
+            // Different images resize to different H/W based on aspect ratio.
+            if arrays.count > 1 {
+                let maxH = arrays.map { $0.dim(2) }.max()!
+                let maxW = arrays.map { $0.dim(3) }.max()!
+                arrays = arrays.map { arr in
+                    let h = arr.dim(2); let w = arr.dim(3)
+                    if h == maxH && w == maxW { return arr }
+                    return padded(arr, widths: [[0, 0], [0, 0], [0, maxH - h], [0, maxW - w]])
+                }
             }
             processedImage = LMInput.ProcessedImage(pixels: concatenated(arrays))
             // Chat template emits <|image|> which tokenizes to image_token_id (258880).
