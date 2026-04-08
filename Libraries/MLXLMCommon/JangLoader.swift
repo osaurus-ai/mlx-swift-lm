@@ -274,9 +274,13 @@ public struct JangLoader: Sendable {
                 continue
             }
 
-            // Try with known group_size first
+            // Try with known group_size first; pass bitWidthsUsed so the
+            // fallback can disambiguate layers whose group_size differs
+            // from the body (e.g., MoE gates).
             let (bits, inferredGroupSize) = inferBitWidthAndGroupSize(
-                weight: weightArray, scales: scalesArray, knownGroupSize: groupSize)
+                weight: weightArray, scales: scalesArray,
+                knownGroupSize: groupSize,
+                bitWidthsUsed: jangConfig.quantization.bitWidthsUsed)
 
             if bits != defaultBits || inferredGroupSize != groupSize {
                 perLayer[basePath] = .quantize(
@@ -302,41 +306,60 @@ public struct JangLoader: Sendable {
 
     /// Infer BOTH bit width and group size from weight and scales tensor shapes.
     ///
-    /// Tries each valid bit width (high to low) to find one that produces a
-    /// consistent integer group size. This handles tensors with non-standard
-    /// group sizes (e.g., MoE gates at group_size=64 vs body at 128).
+    /// A JANG quantized tensor has:
+    ///   weight.shape[-1] = (in_dim * bits) / 32   (packed into uint32)
+    ///   scales.shape[-1] = in_dim / groupSize     (one scale per group per row)
+    ///
+    /// From these two equations:
+    ///   in_dim = scales.shape[-1] * groupSize
+    ///   bits   = weight.shape[-1] * 32 / in_dim
+    ///
+    /// With knownGroupSize this is a direct calculation. Without it, the answer
+    /// is not unique from shapes alone — multiple (bits, groupSize) pairs can
+    /// produce the same packed shape. In that case we require the provided
+    /// `bitWidthsUsed` from the JANG config to disambiguate, preferring
+    /// higher bits first (JANG CRITICAL tier uses the highest bits).
     public static func inferBitWidthAndGroupSize(
-        weight: MLXArray, scales: MLXArray, knownGroupSize: Int? = nil
+        weight: MLXArray, scales: MLXArray, knownGroupSize: Int? = nil,
+        bitWidthsUsed: [Int] = []
     ) -> (bits: Int, groupSize: Int) {
         let packedDim = weight.shape.last ?? 0
         let numGroups = scales.shape.last ?? 1
 
         guard packedDim > 0 && numGroups > 0 else { return (4, knownGroupSize ?? 64) }
 
-        // Use known group_size — this works for the vast majority of tensors.
+        let validBits = [2, 3, 4, 5, 6, 8]
+
+        // Primary path: knownGroupSize gives an unambiguous answer.
+        // bits must divide (packedDim * 32) exactly.
         if let gs = knownGroupSize, gs > 0 {
             let inDim = numGroups * gs
-            if inDim > 0 {
-                let rawBits = (packedDim * 32) / inDim
-                let validBits = [2, 3, 4, 5, 6, 8]
-                if let closest = validBits.min(by: { abs($0 - rawBits) < abs($1 - rawBits) }) {
-                    let expectedPacked = inDim * closest / 32
-                    if expectedPacked == packedDim {
-                        return (closest, gs)
-                    }
+            if inDim > 0 && (packedDim * 32) % inDim == 0 {
+                let bits = (packedDim * 32) / inDim
+                if validBits.contains(bits) {
+                    return (bits, gs)
                 }
             }
         }
 
-        // Known group_size didn't produce a valid round-trip.
-        // Infer both from shapes (low to high bits to prefer the base model's bit width).
-        for bits in [2, 3, 4, 5, 6, 8] {
-            let elemPerU32 = 32 / bits
-            let realCols = packedDim * elemPerU32
-            let gs = realCols / numGroups
-            if gs > 0 && gs * numGroups == realCols {
-                return (bits, gs)
-            }
+        // Fallback: the provided knownGroupSize is wrong for this tensor (e.g.,
+        // MoE gates use a different group_size than body layers). Search for
+        // (bits, groupSize) pairs that produce an exact round-trip. Prefer
+        // higher bits first to favor CRITICAL tier layers (which JANG stores
+        // at the highest available bit width).
+        //
+        // For any candidate `bits`, the implied group size must be an integer:
+        //   in_dim = (packedDim * 32) / bits    (must be exact)
+        //   gs     = in_dim / numGroups         (must be exact)
+        let candidates = bitWidthsUsed.isEmpty
+            ? validBits.sorted(by: >)  // [8, 6, 5, 4, 3, 2]
+            : bitWidthsUsed.sorted(by: >)
+        for bits in candidates {
+            guard bits > 0, (packedDim * 32) % bits == 0 else { continue }
+            let inDim = (packedDim * 32) / bits
+            guard inDim > 0, inDim % numGroups == 0 else { continue }
+            let gs = inDim / numGroups
+            return (bits, gs)
         }
 
         return (4, knownGroupSize ?? 64)
