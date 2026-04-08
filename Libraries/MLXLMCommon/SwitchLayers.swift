@@ -81,12 +81,14 @@ public class SwitchGLU: Module {
         self.hiddenDims = hiddenDims
         self.numExperts = numExperts
         self.activation = activation
-        // Detect common activation types for compiled fast path
-        // Default activation is silu when none specified
+        // Detect common activation types for compiled fast path.
+        // Use safeGeluApproximate for comparison to avoid MLXNN's compiledGeluApproximate
+        // which uses the Power primitive (x ** 3) and crashes on some Metal GPUs during
+        // model load time — see comment on safeGeluApproximate above.
         let testInput = MLXArray([Float(1.0)])
         let testOutput = activation(testInput)
         let siluOutput = silu(testInput)
-        let geluOutput = geluApproximate(testInput)
+        let geluOutput = safeGeluApproximate(testInput)
         self.isSiluActivation = (testOutput .== siluOutput).all().item(Bool.self)
         self.isGeluActivation = !isSiluActivation && (testOutput .== geluOutput).all().item(Bool.self)
 
