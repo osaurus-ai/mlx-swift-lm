@@ -49,8 +49,8 @@ public enum TokenizerSource: Sendable, Equatable {
     /// A provider-specific repository identifier for downloading tokenizer files.
     /// - Parameters:
     ///   - id: The repository identifier (e.g. `"org/tokenizer-name"`).
-    ///   - revision: Optional revision (branch, tag, commit hash). When `nil`,
-    ///     the ``Downloader`` decides the default (typically `"main"`).
+    ///   - revision: Optional revision (branch, tag, commit hash).
+    ///     Prefer an audited tag or commit for reproducible downloads.
     case id(String, revision: String? = nil)
     /// A local directory containing tokenizer files.
     case directory(URL)

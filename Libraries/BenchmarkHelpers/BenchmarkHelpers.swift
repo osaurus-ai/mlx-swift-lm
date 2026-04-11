@@ -440,20 +440,21 @@ public func benchmarkEmbeddingLoading(
 public func benchmarkDownloadCacheHit(
     from downloader: any Downloader,
     modelId: String = "mlx-community/Qwen3-0.6B-4bit",
+    revision: String? = nil,
     runs: Int = BenchmarkDefaults.downloadRuns
 ) async throws -> BenchmarkStats {
     let patterns = modelDownloadPatterns
 
     // Warm-up: ensure the model is cached
     _ = try await downloader.download(
-        id: modelId, revision: "main", matching: patterns,
+        id: modelId, revision: revision, matching: patterns,
         useLatest: false, progressHandler: { _ in })
 
     var times: [Double] = []
     for i in 1 ... runs {
         let start = CFAbsoluteTimeGetCurrent()
         _ = try await downloader.download(
-            id: modelId, revision: "main", matching: patterns,
+            id: modelId, revision: revision, matching: patterns,
             useLatest: false, progressHandler: { _ in })
         let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
         times.append(elapsed)
