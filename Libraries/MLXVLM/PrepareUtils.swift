@@ -1,6 +1,8 @@
 import MLX
 import MLXLMCommon
 
+// These helpers normalize the slightly different tensor ranks used by VLM
+// families so chunked prefill can stay model-agnostic.
 func vlmSequenceLength(_ array: MLXArray) -> Int {
     switch array.ndim {
     case 1:
@@ -130,6 +132,8 @@ func vlmChunkedEmbeddedPrefill(
     var remainingTokens = tokens
     var remainingEmbeddings = embeddings
 
+    // Burn down large embedded prefills incrementally so the final model-specific
+    // prepare() path only has to carry the tail window.
     while vlmEmbeddingSequenceLength(remainingEmbeddings) > prefillStepSize {
         let chunkTokens = remainingTokens.map { vlmTakePrefix($0, count: prefillStepSize) }
         let chunkEmbeddings = vlmTakeEmbeddingPrefix(remainingEmbeddings, count: prefillStepSize)
@@ -150,6 +154,8 @@ func vlmChunkedTextPrefill(
     let prefillStepSize = windowSize ?? 512
     var remaining = text
 
+    // Keep the last window in hand for the caller while advancing the cache in
+    // fixed-size text chunks.
     while vlmSequenceLength(remaining.tokens) > prefillStepSize {
         let chunk = LMInput.Text(
             tokens: vlmTakePrefix(remaining.tokens, count: prefillStepSize),
