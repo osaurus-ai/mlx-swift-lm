@@ -13,6 +13,9 @@ let package = Package(
         .visionOS(.v1),
     ],
     products: [
+        .executable(
+            name: "VLMRuntimeBenchmarks",
+            targets: ["VLMRuntimeBenchmarks"]),
         .library(
             name: "MLXLLM",
             targets: ["MLXLLM"]),
@@ -115,6 +118,16 @@ let package = Package(
             ],
             path: "Libraries/IntegrationTestHelpers",
             exclude: ["README.md"]
+        ),
+        .executableTarget(
+            name: "VLMRuntimeBenchmarks",
+            dependencies: [
+                "BenchmarkHelpers",
+                "MLXLMCommon",
+                "MLXVLM",
+                .product(name: "MLX", package: "mlx-swift"),
+            ],
+            path: "Benchmarks/VLMRuntimeBenchmarks"
         ),
         .testTarget(
             name: "MLXLMTests",
