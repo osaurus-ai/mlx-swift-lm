@@ -127,7 +127,8 @@ let package = Package(
                 "MLXVLM",
                 .product(name: "MLX", package: "mlx-swift"),
             ],
-            path: "Benchmarks/VLMRuntimeBenchmarks"
+            path: "Benchmarks/VLMRuntimeBenchmarks",
+            exclude: ["README.md"]
         ),
         .testTarget(
             name: "MLXLMTests",
