@@ -22,7 +22,7 @@ public struct ModelConfiguration: Sendable {
     }
 
     public enum Identifier: Sendable {
-        case id(String, revision: String = "main")
+        case id(String, revision: String? = nil)
         case directory(URL)
     }
 
@@ -92,7 +92,7 @@ public struct ModelConfiguration: Sendable {
     public var toolCallFormat: ToolCallFormat?
 
     public init(
-        id: String, revision: String = "main",
+        id: String, revision: String? = nil,
         tokenizerSource: TokenizerSource? = nil,
         defaultPrompt: String = "",
         extraEOSTokens: Set<String> = [],

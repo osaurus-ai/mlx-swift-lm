@@ -175,8 +175,12 @@ Sentence Transformers, BERT, and other popular embedding models.
 Add the package to your `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/osaurus-ai/mlx-swift-lm", branch: "main"),
+.package(
+    url: "https://github.com/osaurus-ai/mlx-swift-lm",
+    revision: "10d547ee65e16e9e9c20197623b29ab7c4952100"),
 ```
+
+Pin to an audited tag or commit in production. Avoid tracking `main`.
 
 Then add tokenizer and downloader integrations:
 
@@ -207,7 +211,8 @@ import MLXLMTokenizers
 let model = try await loadModel(
     from: HubClient.default,
     using: TokenizersLoader(),
-    id: "mlx-community/Qwen3-4B-4bit"
+    id: "mlx-community/Qwen3-4B-4bit",
+    revision: "<audited-model-tag-or-commit>"
 )
 let session = ChatSession(model)
 print(try await session.respond(to: "What are two things to see in San Francisco?"))
@@ -291,10 +296,12 @@ Change your package URL:
 
 ```swift
 // Before
-.package(url: "https://github.com/ml-explore/mlx-swift-lm", branch: "main"),
+.package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "2.30.0"),
 
 // After
-.package(url: "https://github.com/osaurus-ai/mlx-swift-lm", branch: "main"),
+.package(
+    url: "https://github.com/osaurus-ai/mlx-swift-lm",
+    revision: "10d547ee65e16e9e9c20197623b29ab7c4952100"),
 ```
 
 Everything else stays the same. You gain JANG support, Gemma 4, Mistral Small 4, speculative decoding, `isVLM`, and MoE performance boosts for free.
@@ -312,7 +319,9 @@ Version 3 decouples tokenizer and downloader implementations.
 .package(url: "https://github.com/ml-explore/mlx-swift-lm/", from: "2.30.0"),
 
 // After (3.x)
-.package(url: "https://github.com/osaurus-ai/mlx-swift-lm/", branch: "main"),
+.package(
+    url: "https://github.com/osaurus-ai/mlx-swift-lm/",
+    revision: "10d547ee65e16e9e9c20197623b29ab7c4952100"),
 .package(url: "https://github.com/DePasqualeOrg/swift-tokenizers-mlx/", from: "0.1.0"),
 .package(url: "https://github.com/DePasqualeOrg/swift-hf-api-mlx/", from: "0.1.0"),
 ```

@@ -22,7 +22,7 @@ public struct ModelConfiguration: Sendable {
     /// The backing storage for the model's location.
     public enum Identifier: Sendable {
         /// A Hugging Face Hub repository identifier (e.g., "BAAI/bge-small-en-v1.5").
-        case id(String, revision: String = "main")
+        case id(String, revision: String? = nil)
         /// A file system URL pointing to a local model directory.
         case directory(URL)
     }
@@ -53,11 +53,11 @@ public struct ModelConfiguration: Sendable {
     /// Initializes a configuration using a Hub repository ID.
     /// - Parameters:
     ///   - id: The Hugging Face repo ID.
-    ///   - revision: The Git revision to use (defaults to "main").
+    ///   - revision: The Git revision to use. Prefer an audited tag or commit hash.
     ///   - tokenizerSource: Optional alternate source for the tokenizer.
     public init(
         id: String,
-        revision: String = "main",
+        revision: String? = nil,
         tokenizerSource: TokenizerSource? = nil
     ) {
         self.id = .id(id, revision: revision)
