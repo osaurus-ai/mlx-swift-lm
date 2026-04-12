@@ -86,6 +86,32 @@ func vlmTakeSequenceSlice(_ array: MLXArray, offset: Int, count: Int) -> MLXArra
     }
 }
 
+func vlmTakeSquareMaskPrefix(_ array: MLXArray, count: Int) -> MLXArray {
+    switch array.ndim {
+    case 2:
+        return array[..<count, ..<count]
+    case 3:
+        return array[0..., ..<count, ..<count]
+    case 4:
+        return array[0..., 0..., ..<count, ..<count]
+    default:
+        fatalError("Unsupported VLM square-mask rank: \(array.ndim)")
+    }
+}
+
+func vlmDropSquareMaskPrefix(_ array: MLXArray, count: Int) -> MLXArray {
+    switch array.ndim {
+    case 2:
+        return array[count..., count...]
+    case 3:
+        return array[0..., count..., count...]
+    case 4:
+        return array[0..., 0..., count..., count...]
+    default:
+        fatalError("Unsupported VLM square-mask rank: \(array.ndim)")
+    }
+}
+
 func vlmTrueCount(_ array: MLXArray) -> Int {
     array.asType(.bool).asArray(Bool.self).reduce(into: 0) { partial, value in
         if value { partial += 1 }

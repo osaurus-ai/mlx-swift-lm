@@ -232,11 +232,11 @@ private enum Vision {
             var values = wv(x)
 
             let (B, L) = (queries.dim(0), queries.dim(1))
-            let S = keys.dim(1)
+            let sequenceLength = keys.dim(1)
 
             queries = queries.reshaped(B, L, numHeads, -1).transposed(0, 2, 1, 3)
-            keys = keys.reshaped(B, S, numHeads, -1).transposed(0, 2, 1, 3)
-            values = values.reshaped(B, S, numHeads, -1).transposed(0, 2, 1, 3)
+            keys = keys.reshaped(B, sequenceLength, numHeads, -1).transposed(0, 2, 1, 3)
+            values = values.reshaped(B, sequenceLength, numHeads, -1).transposed(0, 2, 1, 3)
 
             let output = MLXFast.scaledDotProductAttention(
                 queries: queries,
@@ -607,8 +607,39 @@ public class PaliGemma: Module, VLMModel, KVCacheDimensionProvider {
         let (inputEmbedding, finalAttentionMask4d) = inputEmbeddings(
             inputIds: inputIds, pixelValues: image.pixels, mask: mask)
 
+        var remainingTokens = inputIds
+        var remainingEmbeddings = inputEmbedding
+        var remainingMask = finalAttentionMask4d
+        let prefillStepSize = windowSize ?? 512
+
+        // Honor the shared VLM prefill window so large multimodal prompts do not
+        // force PaliGemma through a single full-sequence prepare.
+        while vlmSequenceLength(remainingTokens) > prefillStepSize {
+            let chunkTokens = vlmTakePrefix(remainingTokens, count: prefillStepSize)
+            let chunkEmbeddings = vlmTakeEmbeddingPrefix(
+                remainingEmbeddings, count: prefillStepSize)
+            let chunkMask = vlmTakeSquareMaskPrefix(remainingMask, count: prefillStepSize)
+            _ = languageModel(
+                chunkTokens,
+                cache: cache,
+                inputEmbedding: chunkEmbeddings,
+                mask: chunkMask
+            )
+            MLX.eval(cache)
+
+            remainingTokens = vlmDropPrefix(remainingTokens, count: prefillStepSize)
+            remainingEmbeddings = vlmDropEmbeddingPrefix(
+                remainingEmbeddings, count: prefillStepSize)
+            remainingMask = vlmDropSquareMaskPrefix(remainingMask, count: prefillStepSize)
+            Memory.clearCache()
+        }
+
         let result = languageModel(
-            inputIds, cache: cache, inputEmbedding: inputEmbedding, mask: finalAttentionMask4d)
+            remainingTokens,
+            cache: cache,
+            inputEmbedding: remainingEmbeddings,
+            mask: remainingMask
+        )
 
         return .logits(result)
     }
