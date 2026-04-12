@@ -950,6 +950,11 @@ enum Qwen35Language {
             ropeDeltas = nil
         }
 
+        func cachePositionState(precomputedPositionIds: MLXArray?, ropeDeltas: MLXArray?) {
+            self.precomputedPositionIds = precomputedPositionIds
+            self.ropeDeltas = ropeDeltas
+        }
+
         func callAsFunction(
             _ inputs: MLXArray,
             inputsEmbeds: MLXArray? = nil,
@@ -1143,7 +1148,7 @@ public class Qwen35: Module, VLMModel {
     public func prepare(
         _ input: LMInput,
         cache: [any KVCache],
-        windowSize _: Int?
+        windowSize: Int?
     ) throws -> PrepareResult {
         let inputIds = input.text.tokens
 
@@ -1189,15 +1194,81 @@ public class Qwen35: Module, VLMModel {
         }
 
         let typedCache = castCache(cache)
+        if let inputEmbeddings {
+            let (positionIds, ropeDeltas) = Qwen3VLLanguage.getRopeIndex(
+                inputIds: inputIds,
+                imageGridTHW: imageFrames,
+                videoGridTHW: videoFrames,
+                spatialMergeSize: config.visionConfiguration.spatialMergeSize,
+                imageTokenId: config.imageTokenIndex,
+                videoTokenId: config.videoTokenIndex,
+                visionStartTokenId: config.visionStartTokenId,
+                attentionMask: input.text.mask)
+            languageModel.cachePositionState(
+                precomputedPositionIds: positionIds,
+                ropeDeltas: ropeDeltas)
+
+            let (remainingTokens, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+                tokens: inputIds,
+                embeddings: inputEmbeddings,
+                windowSize: windowSize
+            ) { chunkTokens, chunkEmbeddings in
+                let cacheOffset = typedCache?[languageModel.model.faIdx].offset ?? 0
+                let chunkPositionIds = vlmTakeSequenceSlice(
+                    positionIds,
+                    offset: cacheOffset,
+                    count: vlmEmbeddingSequenceLength(chunkEmbeddings))
+                _ = languageModel(
+                    chunkTokens!,
+                    inputsEmbeds: chunkEmbeddings,
+                    cache: typedCache,
+                    mask: nil,
+                    positionIds: chunkPositionIds,
+                    pixelValues: nil,
+                    imageGridTHW: nil,
+                    videoGridTHW: nil)
+                MLX.eval(cache)
+            }
+
+            let finalCacheOffset = typedCache?[languageModel.model.faIdx].offset ?? 0
+            let finalPositionIds = vlmTakeSequenceSlice(
+                positionIds,
+                offset: finalCacheOffset,
+                count: vlmEmbeddingSequenceLength(remainingEmbeddings))
+            let output = languageModel(
+                remainingTokens!,
+                inputsEmbeds: remainingEmbeddings,
+                cache: typedCache,
+                mask: nil,
+                positionIds: finalPositionIds,
+                pixelValues: nil,
+                imageGridTHW: nil,
+                videoGridTHW: nil
+            )
+            return .logits(output)
+        }
+
+        let remainingText = vlmChunkedTextPrefill(input.text, windowSize: windowSize) { chunk in
+            _ = languageModel(
+                chunk.tokens,
+                inputsEmbeds: nil,
+                cache: typedCache,
+                mask: chunk.mask,
+                positionIds: nil,
+                pixelValues: nil,
+                imageGridTHW: nil,
+                videoGridTHW: nil)
+            MLX.eval(cache)
+        }
         let output = languageModel(
-            inputIds,
-            inputsEmbeds: inputEmbeddings,
+            remainingText.tokens,
+            inputsEmbeds: nil,
             cache: typedCache,
-            mask: input.text.mask,
+            mask: remainingText.mask,
             positionIds: nil,
-            pixelValues: pixelValues,
-            imageGridTHW: imageFrames,
-            videoGridTHW: videoFrames
+            pixelValues: nil,
+            imageGridTHW: nil,
+            videoGridTHW: nil
         )
 
         return .logits(output)

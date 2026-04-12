@@ -880,7 +880,15 @@ public class PixtralVLM: Module, VLMModel, KVCacheDimensionProvider {
             pixelValues: pixelValues
         )
 
-        let logits = languageModel(inputIds, cache: cache, inputsEmbeds: embeddings)
+        let (remainingTokens, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+            tokens: inputIds,
+            embeddings: embeddings,
+            windowSize: windowSize
+        ) { chunkTokens, chunkEmbeddings in
+            _ = languageModel(chunkTokens!, cache: cache, inputsEmbeds: chunkEmbeddings)
+            MLX.eval(cache)
+        }
+        let logits = languageModel(remainingTokens!, cache: cache, inputsEmbeds: remainingEmbeddings)
         return .logits(.init(logits: logits))
     }
 

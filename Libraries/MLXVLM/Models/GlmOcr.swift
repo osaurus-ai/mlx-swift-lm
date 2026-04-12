@@ -1032,7 +1032,14 @@ public class GlmOcr: Module, VLMModel, KVCacheDimensionProvider {
             inputIds: input.text.tokens, pixelValues: allPixels,
             frames: allFrames.isEmpty ? nil : allFrames)
 
-        let result = languageModel(nil, cache: cache, inputEmbedding: inputEmbeddings)
+        let (_, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+            embeddings: inputEmbeddings,
+            windowSize: windowSize
+        ) { _, chunkEmbeddings in
+            _ = languageModel(nil, cache: cache, inputEmbedding: chunkEmbeddings)
+            MLX.eval(cache)
+        }
+        let result = languageModel(nil, cache: cache, inputEmbedding: remainingEmbeddings)
 
         return .logits(result)
     }

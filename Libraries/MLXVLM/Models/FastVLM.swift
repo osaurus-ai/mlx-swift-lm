@@ -1135,7 +1135,14 @@ public class FastVLM: Module, VLMModel, KVCacheDimensionProvider {
             pixelValues: input.image?.pixels,
             mask: input.text.mask
         )
-        let result = languageModel(nil, cache: cache, inputEmbedding: embeddings)
+        let (_, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+            embeddings: embeddings,
+            windowSize: windowSize
+        ) { _, chunkEmbeddings in
+            _ = languageModel(nil, cache: cache, inputEmbedding: chunkEmbeddings)
+            MLX.eval(cache)
+        }
+        let result = languageModel(nil, cache: cache, inputEmbedding: remainingEmbeddings)
         return .logits(result)
     }
 

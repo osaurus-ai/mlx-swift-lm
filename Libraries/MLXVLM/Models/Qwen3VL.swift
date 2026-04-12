@@ -1233,6 +1233,10 @@ enum Qwen3VLLanguage {
             }
         }
 
+        func cacheRopeState(_ ropeDeltas: MLXArray?) {
+            self.ropeDeltas = ropeDeltas
+        }
+
         func callAsFunction(
             _ inputIds: MLXArray?,
             cache: [KVCache]?,
@@ -1606,7 +1610,7 @@ public final class Qwen3VL: Module, VLMModel, KVCacheDimensionProvider {
     public func prepare(
         _ input: LMInput,
         cache: [any KVCache],
-        windowSize _: Int?
+        windowSize: Int?
     ) throws -> PrepareResult {
         let inputIds = input.text.tokens
 
@@ -1669,18 +1673,121 @@ public final class Qwen3VL: Module, VLMModel, KVCacheDimensionProvider {
         }
 
         let typedCache = castCache(cache)
-
-        let languageOutput = languageModel(
-            inputIds,
-            cache: typedCache,
-            inputEmbeddings: inputEmbeddings,
-            mask: nil,
-            positionIds: nil,
-            visualMask: visualMask,
-            deepstackEmbeds: deepstackEmbeds,
-            pixelValues: pixelValues,
+        let (positionIds, ropeDeltas) = Qwen3VLLanguage.getRopeIndex(
+            inputIds: inputIds,
             imageGridTHW: imageFrames,
-            videoGridTHW: videoFrames)
+            videoGridTHW: videoFrames,
+            spatialMergeSize: config.visionConfiguration.spatialMergeSize,
+            imageTokenId: config.imageTokenIndex,
+            videoTokenId: config.videoTokenIndex,
+            visionStartTokenId: config.visionStartTokenId,
+            attentionMask: nil)
+        languageModel.cacheRopeState(ropeDeltas)
+
+        if let inputEmbeddings {
+            var remainingVisualMask = visualMask
+            var remainingDeepstackEmbeds = deepstackEmbeds
+            let (remainingTokens, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+                tokens: inputIds,
+                embeddings: inputEmbeddings,
+                windowSize: windowSize
+            ) { chunkTokens, chunkEmbeddings in
+                let cacheOffset = typedCache?.first?.offset ?? 0
+                let chunkLength = vlmEmbeddingSequenceLength(chunkEmbeddings)
+                let chunkPositionIds = vlmTakeSequenceSlice(
+                    positionIds,
+                    offset: cacheOffset,
+                    count: chunkLength)
+                let chunkVisualMask = remainingVisualMask.map {
+                    vlmTakePrefix($0, count: chunkLength)
+                }
+                let chunkVisualCount = chunkVisualMask.map(vlmTrueCount) ?? 0
+                let chunkDeepstackEmbeds = remainingDeepstackEmbeds.map { layerEmbeds in
+                    layerEmbeds.map {
+                        vlmTakeLeadingFeatures($0, count: chunkVisualCount)
+                    }
+                }
+
+                _ = languageModel(
+                    chunkTokens,
+                    cache: typedCache,
+                    inputEmbeddings: chunkEmbeddings,
+                    mask: nil,
+                    positionIds: chunkPositionIds,
+                    visualMask: chunkVisualMask,
+                    deepstackEmbeds: chunkDeepstackEmbeds,
+                    pixelValues: nil,
+                    imageGridTHW: nil,
+                    videoGridTHW: nil)
+                MLX.eval(cache)
+
+                remainingVisualMask = remainingVisualMask.map {
+                    vlmDropPrefix($0, count: chunkLength)
+                }
+                remainingDeepstackEmbeds = remainingDeepstackEmbeds.map { layerEmbeds in
+                    layerEmbeds.map {
+                        vlmDropLeadingFeatures($0, count: chunkVisualCount)
+                    }
+                }
+            }
+
+            let finalCacheOffset = typedCache?.first?.offset ?? 0
+            let finalPositionIds = vlmTakeSequenceSlice(
+                positionIds,
+                offset: finalCacheOffset,
+                count: vlmEmbeddingSequenceLength(remainingEmbeddings))
+
+            let languageOutput = languageModel(
+                remainingTokens,
+                cache: typedCache,
+                inputEmbeddings: remainingEmbeddings,
+                mask: nil,
+                positionIds: finalPositionIds,
+                visualMask: remainingVisualMask,
+                deepstackEmbeds: remainingDeepstackEmbeds,
+                pixelValues: nil,
+                imageGridTHW: nil,
+                videoGridTHW: nil)
+
+            return .logits(languageOutput)
+        }
+
+        let remainingText = vlmChunkedTextPrefill(input.text, windowSize: windowSize) { chunk in
+            let cacheOffset = typedCache?.first?.offset ?? 0
+            let chunkPositionIds = vlmTakeSequenceSlice(
+                positionIds,
+                offset: cacheOffset,
+                count: vlmSequenceLength(chunk.tokens))
+            _ = languageModel(
+                chunk.tokens,
+                cache: typedCache,
+                inputEmbeddings: nil,
+                mask: nil,
+                positionIds: chunkPositionIds,
+                visualMask: nil,
+                deepstackEmbeds: nil,
+                pixelValues: nil,
+                imageGridTHW: nil,
+                videoGridTHW: nil)
+            MLX.eval(cache)
+        }
+
+        let finalCacheOffset = typedCache?.first?.offset ?? 0
+        let finalPositionIds = vlmTakeSequenceSlice(
+            positionIds,
+            offset: finalCacheOffset,
+            count: vlmSequenceLength(remainingText.tokens))
+        let languageOutput = languageModel(
+            remainingText.tokens,
+            cache: typedCache,
+            inputEmbeddings: nil,
+            mask: nil,
+            positionIds: finalPositionIds,
+            visualMask: nil,
+            deepstackEmbeds: nil,
+            pixelValues: nil,
+            imageGridTHW: nil,
+            videoGridTHW: nil)
 
         return .logits(languageOutput)
     }

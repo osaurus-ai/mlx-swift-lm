@@ -986,11 +986,13 @@ public class Gemma3: Module, VLMModel, KVCacheDimensionProvider {
         -> PrepareResult
     {
         guard let imagePixels = input.image?.pixels else {
-            // Text-only input
             let convertedCache = cache.compactMap { $0 as KVCache }
-            let result = languageModel(
-                input.text.tokens, cache: convertedCache, inputEmbedding: nil, mask: nil)
-            return .logits(result)
+            let remainingText = vlmChunkedTextPrefill(input.text, windowSize: windowSize) { chunk in
+                _ = languageModel(
+                    chunk.tokens, cache: convertedCache, inputEmbedding: nil, mask: nil)
+                MLX.eval(convertedCache)
+            }
+            return .tokens(remainingText)
         }
 
         let (inputEmbeddings, _) = getInputEmbeddings(
