@@ -202,6 +202,10 @@ public struct UserInput {
         self.prompt = .chat([
             .user(prompt, images: images, videos: videos)
         ])
+        // prompt.didSet is not triggered during init, so keep the stored media
+        // arrays in sync with the chat payload explicitly.
+        self.images = images
+        self.videos = videos
         self.tools = tools
         self.additionalContext = additionalContext
     }

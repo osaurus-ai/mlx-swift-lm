@@ -862,7 +862,15 @@ public class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
         }
 
         let paddedCache = padCache(cache)
-        let out = languageModel(input.text.tokens, inputEmbedding: emb, cache: paddedCache)
+        let (remainingTokens, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+            tokens: input.text.tokens,
+            embeddings: emb,
+            windowSize: windowSize
+        ) { chunkTokens, chunkEmbeddings in
+            _ = languageModel(chunkTokens, inputEmbedding: chunkEmbeddings, cache: paddedCache)
+            MLX.eval(cache)
+        }
+        let out = languageModel(remainingTokens, inputEmbedding: remainingEmbeddings, cache: paddedCache)
         return .logits(.init(logits: out))
     }
 

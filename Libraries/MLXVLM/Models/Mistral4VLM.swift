@@ -360,7 +360,15 @@ public class Mistral4VLM: Module, VLMModel, KVCacheDimensionProvider {
         }
 
         let embeddings = getInputEmbeddings(inputIds: inputIds, pixelValues: pixelValues, imageSizes: imageSizes)
-        let logits = languageModel(inputIds, cache: cache, inputsEmbeds: embeddings)
+        let (remainingInputIds, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+            tokens: inputIds,
+            embeddings: embeddings,
+            windowSize: windowSize
+        ) { chunkInputIds, chunkEmbeddings in
+            _ = languageModel(chunkInputIds, cache: cache, inputsEmbeds: chunkEmbeddings)
+            MLX.eval(cache)
+        }
+        let logits = languageModel(remainingInputIds, cache: cache, inputsEmbeds: remainingEmbeddings)
         return .logits(.init(logits: logits))
     }
 

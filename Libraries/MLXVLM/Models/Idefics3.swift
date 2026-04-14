@@ -734,7 +734,15 @@ public class Idefics3: Module, VLMModel, KVCacheDimensionProvider {
             inputIds: inputIds,
             pixelValues: pixelValues
         )
-        let result = languageModel(nil, cache: cache, inputs_embeds: embeddings)
+
+        let (_, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+            embeddings: embeddings,
+            windowSize: windowSize
+        ) { _, chunkEmbeddings in
+            _ = languageModel(nil, cache: cache, inputs_embeds: chunkEmbeddings)
+            MLX.eval(cache)
+        }
+        let result = languageModel(nil, cache: cache, inputs_embeds: remainingEmbeddings)
         return .logits(result)
     }
 

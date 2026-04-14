@@ -1033,7 +1033,14 @@ public class LFM2VL: Module, VLMModel, KVCacheDimensionProvider {
             pixelAttentionMask: pixelAttentionMask
         )
 
-        let result = languageModel(nil, cache: cache, inputsEmbeds: inputEmbeddings)
+        let (_, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+            embeddings: inputEmbeddings,
+            windowSize: windowSize
+        ) { _, chunkEmbeddings in
+            _ = languageModel(nil, cache: cache, inputsEmbeds: chunkEmbeddings)
+            MLX.eval(cache)
+        }
+        let result = languageModel(nil, cache: cache, inputsEmbeds: remainingEmbeddings)
 
         return .logits(result)
     }
