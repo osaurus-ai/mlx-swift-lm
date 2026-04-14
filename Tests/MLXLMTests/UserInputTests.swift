@@ -230,4 +230,28 @@ public class UserInputTests: XCTestCase {
         XCTAssertEqual(userInput.images.count, 1)
     }
 
+    public func testPromptInitializerPreservesImageAttachments() {
+        let imageURL = URL(string: "https://example.com/example.png")!
+
+        let userInput = UserInput(
+            prompt: "What is this?",
+            images: [.url(imageURL)]
+        )
+
+        XCTAssertEqual(userInput.images.count, 1)
+        XCTAssertEqual(userInput.videos.count, 0)
+    }
+
+    public func testPromptInitializerPreservesVideoAttachments() {
+        let videoURL = URL(string: "https://example.com/example.mov")!
+
+        let userInput = UserInput(
+            prompt: "Describe the clip.",
+            videos: [.url(videoURL)]
+        )
+
+        XCTAssertEqual(userInput.images.count, 0)
+        XCTAssertEqual(userInput.videos.count, 1)
+    }
+
 }

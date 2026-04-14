@@ -291,7 +291,7 @@ public func loadModelContainer(
 ///   - downloader: the ``Downloader`` to use for fetching remote resources
 ///   - tokenizerLoader: the ``TokenizerLoader`` to use for loading the tokenizer
 ///   - id: model identifier, e.g "mlx-community/Qwen3-4B-4bit"
-///   - revision: revision to download (defaults to "main")
+///   - revision: revision to download. Prefer an audited tag or commit hash.
 ///   - useLatest: when true, always checks the provider for the latest version
 ///   - progressHandler: optional callback for progress
 /// - Returns: a ``ModelContext``
@@ -299,7 +299,7 @@ public func loadModel(
     from downloader: any Downloader,
     using tokenizerLoader: any TokenizerLoader,
     id: String,
-    revision: String = "main",
+    revision: String? = nil,
     useLatest: Bool = false,
     progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
 ) async throws -> sending ModelContext {
@@ -320,7 +320,7 @@ public func loadModel(
 ///   - downloader: the ``Downloader`` to use for fetching remote resources
 ///   - tokenizerLoader: the ``TokenizerLoader`` to use for loading the tokenizer
 ///   - id: model identifier, e.g "mlx-community/Qwen3-4B-4bit"
-///   - revision: revision to download (defaults to "main")
+///   - revision: revision to download. Prefer an audited tag or commit hash.
 ///   - useLatest: when true, always checks the provider for the latest version
 ///   - progressHandler: optional callback for progress
 /// - Returns: a ``ModelContainer``
@@ -328,7 +328,7 @@ public func loadModelContainer(
     from downloader: any Downloader,
     using tokenizerLoader: any TokenizerLoader,
     id: String,
-    revision: String = "main",
+    revision: String? = nil,
     useLatest: Bool = false,
     progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
 ) async throws -> sending ModelContainer {

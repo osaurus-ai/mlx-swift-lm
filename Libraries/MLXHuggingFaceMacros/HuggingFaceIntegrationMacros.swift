@@ -45,7 +45,6 @@ public struct DownloaderMacro: ExpressionMacro {
                         guard let repoID = HuggingFace.Repo.ID(rawValue: id) else {
                             throw HuggingFaceDownloaderError.invalidRepositoryID(id)
                         }
-                        let revision = revision ?? "main"
 
                         return try await upstream.downloadSnapshot(
                             of: repoID,

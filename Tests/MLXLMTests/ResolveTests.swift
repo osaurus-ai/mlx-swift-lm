@@ -54,6 +54,19 @@ private final class LockIsolated<Value: Sendable>: @unchecked Sendable {
 
 @Suite struct ResolveTests {
 
+    @Test func modelIDWithoutRevisionPassesNil() async throws {
+        let downloader = MockDownloader()
+        let config = ModelConfiguration(id: "org/model")
+
+        _ = try await resolve(
+            configuration: config, from: downloader,
+            useLatest: false, progressHandler: { _ in })
+
+        #expect(downloader.calls.value.count == 1)
+        #expect(downloader.calls.value[0].id == "org/model")
+        #expect(downloader.calls.value[0].revision == nil)
+    }
+
     @Test func nilTokenizerSourceUsesModelDirectory() async throws {
         let downloader = MockDownloader()
         let config = ModelConfiguration(

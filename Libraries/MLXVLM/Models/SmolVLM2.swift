@@ -88,10 +88,14 @@ public struct SmolVLMProcessor: UserInputProcessor {
     let fakeImageToken = "<fake_token_around_image>"
     let globalImageToken = "<global-img>"
 
-    var maxProcessingImageSize: CGFloat { CGFloat(config.size.longestEdge) }  // 2048
-    var fixedImageSize: CGFloat { CGFloat(config.maxImageSize.longestEdge) }  // 384 for big models, 512 for small models (200-500M)
+    // 2048 in current shipped configs.
+    var maxProcessingImageSize: CGFloat { CGFloat(config.size.longestEdge) }
+    // 384 for big models, 512 for small models (200-500M).
+    var fixedImageSize: CGFloat { CGFloat(config.maxImageSize.longestEdge) }
     var imageSequenceLength: Int { config.imageSequenceLength }
-    var maxVideoFrames: Int { 20 /*config.videoSampling.maxFrames*/ }
+    // Respect the model config so video sampling stays aligned with the
+    // checkpoint's intended prompt shape and memory budget.
+    var maxVideoFrames: Int { config.videoSampling.maxFrames }
     var targetVideoFPS: Double { Double(config.videoSampling.fps) }
 
     let defaultVideoSystemMessage =
@@ -220,7 +224,9 @@ public struct SmolVLMProcessor: UserInputProcessor {
     }
 
     public func prepare(input: UserInput) async throws -> LMInput {
-        let messages = Qwen2VLMessageGenerator().generate(from: input)  // TODO: Create SmolVLM2MessageGenerator
+        // SmolVLM2 still relies on the Qwen-style message generator until it
+        // grows a dedicated prompt builder.
+        let messages = Qwen2VLMessageGenerator().generate(from: input)
 
         if input.images.isEmpty && input.videos.isEmpty {
             // No image scenario
@@ -316,18 +322,19 @@ public struct SmolVLMProcessor: UserInputProcessor {
                 targetFPS: { duration in
                     // 1 fps for duration >= 10s, apply a multiplier if smaller
                     max((10 - 0.9 * duration.seconds) * targetVideoFPS, 1)
-                }
-            ) { frame in
+                },
+                maxFrames: maxVideoFrames,
+                frameProcessing: { frame in
 
-                let processedFrame = frame.frame
-                    .toSRGB()
-                    .resampled(
-                        to: CGSize(width: fixedImageSize, height: fixedImageSize),
-                        method: CIImage.ResamplingMethod.lanczos
-                    )
-                    .normalized(mean: config.imageMeanTuple, std: config.imageStdTuple)
-                return VideoFrame(frame: processedFrame, timeStamp: frame.timeStamp)
-            }
+                    let processedFrame = frame.frame
+                        .toSRGB()
+                        .resampled(
+                            to: CGSize(width: fixedImageSize, height: fixedImageSize),
+                            method: CIImage.ResamplingMethod.lanczos
+                        )
+                        .normalized(mean: config.imageMeanTuple, std: config.imageStdTuple)
+                    return VideoFrame(frame: processedFrame, timeStamp: frame.timeStamp)
+                })
 
             let thwFrames = (0 ..< processedFrames.frames.count).map {
                 THW($0, Int(fixedImageSize), Int(fixedImageSize))

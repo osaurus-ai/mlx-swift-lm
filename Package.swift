@@ -13,6 +13,9 @@ let package = Package(
         .visionOS(.v1),
     ],
     products: [
+        .executable(
+            name: "VLMRuntimeBenchmarks",
+            targets: ["VLMRuntimeBenchmarks"]),
         .library(
             name: "MLXLLM",
             targets: ["MLXLLM"]),
@@ -36,7 +39,9 @@ let package = Package(
             targets: ["IntegrationTestHelpers"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/osaurus-ai/mlx-swift", branch: "osaurus-0.31.3"),
+        .package(
+            url: "https://github.com/osaurus-ai/mlx-swift",
+            revision: "02b01f07e8c5cae22cd7fd1187e673d8d5de0db6"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
     ],
     targets: [
@@ -112,6 +117,17 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
             ],
             path: "Libraries/IntegrationTestHelpers",
+            exclude: ["README.md"]
+        ),
+        .executableTarget(
+            name: "VLMRuntimeBenchmarks",
+            dependencies: [
+                "BenchmarkHelpers",
+                "MLXLMCommon",
+                "MLXVLM",
+                .product(name: "MLX", package: "mlx-swift"),
+            ],
+            path: "Benchmarks/VLMRuntimeBenchmarks",
             exclude: ["README.md"]
         ),
         .testTarget(

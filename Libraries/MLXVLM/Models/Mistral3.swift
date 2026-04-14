@@ -746,7 +746,15 @@ public class Mistral3VLM: Module, VLMModel, KVCacheDimensionProvider {
             imageSizes: imageSizes
         )
 
-        let logits = languageModel(inputIds, cache: cache, inputsEmbeds: embeddings)
+        let (remainingInputIds, remainingEmbeddings) = vlmChunkedEmbeddedPrefill(
+            tokens: inputIds,
+            embeddings: embeddings,
+            windowSize: windowSize
+        ) { chunkInputIds, chunkEmbeddings in
+            _ = languageModel(chunkInputIds!, cache: cache, inputsEmbeds: chunkEmbeddings)
+            MLX.eval(cache)
+        }
+        let logits = languageModel(remainingInputIds!, cache: cache, inputsEmbeds: remainingEmbeddings)
         return .logits(.init(logits: logits))
     }
 

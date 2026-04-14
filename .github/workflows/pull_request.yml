@@ -5,19 +5,21 @@ on: pull_request
 permissions:
   contents: read
 
+env:
+  SWIFT_FORMAT_VERSION: 600.0.0
+
 jobs:
   lint:
-    if: github.repository == 'ml-explore/mlx-swift-lm'
     runs-on: ubuntu-22.04
     container:
       image: swift:6.2-rhel-ubi9
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
         with:
           activate-environment: true
 
@@ -26,30 +28,19 @@ jobs:
         run: |
           uv pip install pre-commit
 
-      - name: Get swift-format tag
-        id: swift-format
-        shell: sh
-        run: |
-          cd /tmp
-          LATEST_TAG=$(curl -s https://api.github.com/repos/swiftlang/swift-format/releases/latest | \
-            grep '"tag_name":' | \
-            sed -E 's/.*"([^"]+)".*/\1/')
-          echo "swift-format $LATEST_TAG"
-          echo "SWIFT_FORMAT_VERSION=$LATEST_TAG" >> $GITHUB_OUTPUT
-
       - name: Cache swift-format build
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: cache-swift-format
         with:
           path: /tmp/swift-format/.build
-          key: ${{ runner.os }}-swift-format-build-${{ steps.swift-format.outputs.SWIFT_FORMAT_VERSION }}
+          key: ${{ runner.os }}-swift-format-build-${{ env.SWIFT_FORMAT_VERSION }}
 
       - name: Build swift-format
         if: steps.cache-swift-format.outputs.cache-hit != 'true'
         shell: sh
         run: |
           cd /tmp
-          git clone --branch ${{ steps.swift-format.outputs.SWIFT_FORMAT_VERSION }} --depth 1 https://github.com/swiftlang/swift-format.git
+          git clone --branch ${{ env.SWIFT_FORMAT_VERSION }} --depth 1 https://github.com/swiftlang/swift-format.git
           cd swift-format
           swift build -c release
 
@@ -71,10 +62,9 @@ jobs:
 
   mac_build_and_test:
     needs: lint
-    if: github.repository == 'ml-explore/mlx-swift-lm'
     runs-on: [self-hosted, macos]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
 
@@ -98,7 +88,7 @@ jobs:
 
       - name: Upload test results
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-results
           path: |
